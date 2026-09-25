@@ -3,11 +3,18 @@ import { Game } from './Game';
 
 interface DebugSnapshot {
   frame: number;
-  player: number[];
-  camera: number[];
+  player: [number, number, number];
+  camera: [number, number, number];
   grounded: boolean;
   calls: number;
   webgl: boolean;
+  phase: string;
+  stage: number;
+  time: number;
+  score: number;
+  bridges: number[];
+  pickupCount: number;
+  cores: number;
 }
 
 declare global {
