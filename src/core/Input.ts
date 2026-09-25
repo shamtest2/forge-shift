@@ -1,89 +1,113 @@
-export type Control = 'forward' | 'backward' | 'left' | 'right' | 'shift' | 'pause' | 'restart';
+export type Action = 'interact' | 'pause' | 'restart' | 'mute';
+type Direction = 'forward' | 'backward' | 'left' | 'right';
+type Control = Direction | Action;
 
-const bindings: Record<string, Control> = {
+// Both keyboard layouts enter exactly the same digital control path.
+const keys: Record<string, Control> = {
   KeyW: 'forward', ArrowUp: 'forward',
   KeyS: 'backward', ArrowDown: 'backward',
   KeyA: 'left', ArrowLeft: 'left',
   KeyD: 'right', ArrowRight: 'right',
-  KeyE: 'shift', Space: 'shift',
+  KeyE: 'interact', Space: 'interact',
   Escape: 'pause', KeyP: 'pause',
-  KeyR: 'restart', Enter: 'restart',
+  KeyR: 'restart', KeyM: 'mute',
 };
 
-/** Keyboard and touch share one action map. Input is cleared on blur so keys cannot stick. */
 export class Input {
-  private readonly heldKeys = new Set<string>();
-  private readonly touchCounts = new Map<Control, number>();
-  private readonly pending = new Set<Control>();
-  onGesture?: () => void;
+  private readonly down = new Set<string>();
+  private readonly touch = new Map<number, Control>();
+  private readonly actions = new Set<Action>();
 
-  private readonly onKeyDown = (event: KeyboardEvent) => {
-    const control = bindings[event.code];
-    if (!control) return;
-    if (event.target instanceof HTMLElement && /^(BUTTON|INPUT|TEXTAREA|SELECT)$/.test(event.target.tagName)
-      && (event.code === 'Enter' || event.code === 'Space')) return;
-    event.preventDefault();
-    if (!this.heldKeys.has(event.code)) {
-      this.heldKeys.add(event.code);
-      if (control === 'shift' || control === 'pause' || control === 'restart') this.pending.add(control);
-      this.onGesture?.();
-    }
-  };
-  private readonly onKeyUp = (event: KeyboardEvent) => {
-    if (bindings[event.code]) {
-      event.preventDefault();
-      this.heldKeys.delete(event.code);
-    }
-  };
-  private readonly onBlur = () => this.clear();
-
-  constructor() {
-    window.addEventListener('keydown', this.onKeyDown);
-    window.addEventListener('keyup', this.onKeyUp);
-    window.addEventListener('blur', this.onBlur);
+  constructor(private readonly root: HTMLElement) {
+    window.addEventListener('keydown', this.keyDown);
+    window.addEventListener('keyup', this.keyUp);
+    window.addEventListener('blur', this.clear);
     document.addEventListener('visibilitychange', this.onVisibility);
+    root.addEventListener('pointerdown', this.pointerDown);
+    root.addEventListener('pointerup', this.pointerEnd);
+    root.addEventListener('pointercancel', this.pointerEnd);
+    root.addEventListener('lostpointercapture', this.pointerEnd);
   }
 
-  private readonly onVisibility = () => { if (document.hidden) this.clear(); };
+  get x(): number {
+    return Number(this.held('right')) - Number(this.held('left'));
+  }
 
-  private active(control: Control): boolean {
-    if ((this.touchCounts.get(control) ?? 0) > 0) return true;
-    for (const code in bindings) {
-      if (bindings[code] === control && this.heldKeys.has(code)) return true;
-    }
+  get z(): number {
+    return Number(this.held('backward')) - Number(this.held('forward'));
+  }
+
+  consume(action: Action): boolean {
+    if (!this.actions.has(action)) return false;
+    this.actions.delete(action);
+    return true;
+  }
+
+  clear = (): void => {
+    this.down.clear();
+    this.touch.clear();
+    this.actions.clear();
+  };
+
+  dispose(): void {
+    window.removeEventListener('keydown', this.keyDown);
+    window.removeEventListener('keyup', this.keyUp);
+    window.removeEventListener('blur', this.clear);
+    document.removeEventListener('visibilitychange', this.onVisibility);
+    this.root.removeEventListener('pointerdown', this.pointerDown);
+    this.root.removeEventListener('pointerup', this.pointerEnd);
+    this.root.removeEventListener('pointercancel', this.pointerEnd);
+    this.root.removeEventListener('lostpointercapture', this.pointerEnd);
+    this.clear();
+  }
+
+  private held(control: Direction): boolean {
+    for (const code of this.down) if (keys[code] === control) return true;
+    for (const active of this.touch.values()) if (active === control) return true;
     return false;
   }
 
-  get horizontal(): number { return Number(this.active('right')) - Number(this.active('left')); }
-  get vertical(): number { return Number(this.active('forward')) - Number(this.active('backward')); }
+  private keyDown = (event: KeyboardEvent): void => {
+    const control = keys[event.code];
+    if (!control || event.altKey || event.ctrlKey || event.metaKey) return;
+    if (event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement) return;
+    event.preventDefault(); // Especially important for Space and the four arrows.
+    if (this.down.has(event.code)) return;
+    this.down.add(event.code);
+    if (control === 'interact' || control === 'pause' || control === 'restart' || control === 'mute') {
+      this.actions.add(control);
+    }
+  };
 
-  /** One-shot actions; a held key cannot repeatedly trigger an interaction. */
-  consume(control: 'shift' | 'pause' | 'restart'): boolean {
-    const result = this.pending.delete(control);
-    return result;
-  }
+  private keyUp = (event: KeyboardEvent): void => {
+    if (!keys[event.code]) return;
+    event.preventDefault();
+    this.down.delete(event.code);
+  };
 
-  press(control: Control): void {
-    const count = this.touchCounts.get(control) ?? 0;
-    this.touchCounts.set(control, count + 1);
-    if (count === 0 && (control === 'shift' || control === 'pause' || control === 'restart')) this.pending.add(control);
-    this.onGesture?.();
-  }
-  release(control: Control): void {
-    const count = this.touchCounts.get(control) ?? 0;
-    if (count <= 1) this.touchCounts.delete(control);
-    else this.touchCounts.set(control, count - 1);
-  }
-  trigger(control: 'shift' | 'pause' | 'restart'): void {
-    this.pending.add(control);
-    this.onGesture?.();
-  }
-  clear(): void { this.heldKeys.clear(); this.touchCounts.clear(); this.pending.clear(); }
-  dispose(): void {
-    this.clear();
-    window.removeEventListener('keydown', this.onKeyDown);
-    window.removeEventListener('keyup', this.onKeyUp);
-    window.removeEventListener('blur', this.onBlur);
-    document.removeEventListener('visibilitychange', this.onVisibility);
-  }
+  private onVisibility = (): void => {
+    if (document.hidden) this.clear();
+  };
+
+  private pointerDown = (event: PointerEvent): void => {
+    const target = (event.target as Element).closest<HTMLElement>('[data-control]');
+    if (!target) return;
+    const control = target.dataset.control as Control;
+    if (!Object.values(keys).includes(control)) return;
+    event.preventDefault();
+    target.setPointerCapture(event.pointerId);
+    this.touch.set(event.pointerId, control);
+    target.classList.add('pressed');
+    if (control === 'interact' || control === 'pause' || control === 'restart' || control === 'mute') {
+      this.actions.add(control);
+    }
+  };
+
+  private pointerEnd = (event: PointerEvent): void => {
+    const control = this.touch.get(event.pointerId);
+    if (!control) return;
+    this.touch.delete(event.pointerId);
+    const target = event.target as HTMLElement;
+    target.classList.remove('pressed');
+  };
 }

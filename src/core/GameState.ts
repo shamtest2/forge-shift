@@ -1,18 +1,19 @@
-export type Phase = 'boot' | 'loading' | 'gameplay' | 'paused' | 'results';
+export type GamePhase = 'boot' | 'loading' | 'gameplay' | 'paused' | 'results';
 
-const allowed: Record<Phase, readonly Phase[]> = {
+const allowed: Record<GamePhase, readonly GamePhase[]> = {
   boot: ['loading'],
   loading: ['gameplay'],
   gameplay: ['paused', 'results'],
-  paused: ['gameplay', 'results'],
+  paused: ['gameplay'],
   results: ['gameplay'],
 };
 
-/** Explicit transitions prevent overlapping gameplay, pause and results states. */
+/** One authoritative phase; results carry a reason, not another set of flags. */
 export class GameState {
-  phase: Phase = 'boot';
-  transition(next: Phase): void {
-    if (!allowed[this.phase].includes(next)) throw new Error(`Illegal game transition: ${this.phase} -> ${next}`);
+  phase: GamePhase = 'boot';
+
+  enter(next: GamePhase): void {
+    if (!allowed[this.phase].includes(next)) throw new Error(`Invalid game transition: ${this.phase} -> ${next}`);
     this.phase = next;
   }
 }

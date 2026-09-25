@@ -1,17 +1,41 @@
+import '@fontsource/barlow-condensed/latin-700.css';
+import '@fontsource/dm-sans/latin-400.css';
+import '@fontsource/dm-sans/latin-500.css';
+import '@fontsource/dm-sans/latin-700.css';
 import './style.css';
 import { Game } from './Game';
 
-const container = document.querySelector<HTMLElement>('#game-canvas');
-const hud = document.querySelector<HTMLElement>('#game-ui');
-const boot = document.querySelector<HTMLElement>('#boot-screen');
-if (!container || !hud || !boot) throw new Error('Game shell is incomplete');
+interface DebugSnapshot {
+  frame: number;
+  player: [number, number, number];
+  camera: [number, number, number];
+  grounded: boolean;
+  calls: number;
+  webgl: boolean;
+  phase: string;
+  stage: number;
+  time: number;
+  score: number;
+  bridges: number[];
+  pickupCount: number;
+  cores: number;
+}
+
+declare global {
+  interface Window {
+    __forgeSdkScript?: Promise<boolean>;
+    __forgeDebug?: () => DebugSnapshot;
+  }
+}
+
+const app = document.querySelector<HTMLElement>('#app');
+if (!app) throw new Error('Root element missing');
+
 try {
-  const game = new Game(container, hud);
+  const game = new Game(app);
   game.start();
-  // During Vite hot reload, remove WebGL resources and input handlers before reconstructing the game.
-  if (import.meta.hot) import.meta.hot.dispose(() => game.dispose());
+  window.dispatchEvent(new Event('forge-ready'));
 } catch (error) {
-  console.error('FORGE//SHIFT startup failed', error);
-  boot.classList.add('error');
-  boot.textContent = 'WEBGL COULD NOT START — PLEASE ENABLE HARDWARE ACCELERATION AND RELOAD';
+  console.error('FORGE//SHIFT could not initialize', error);
+  app.innerHTML = '<div class="boot error">DISPLAY UNAVAILABLE<small>WebGL is required. Try updating your browser and reloading.</small></div>';
 }

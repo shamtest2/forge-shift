@@ -1,240 +1,390 @@
 import * as THREE from 'three';
-import type { StageConfig, SurfaceSpec } from '../gameplay/LevelSystem';
+import type { BridgeLayout, StageLayout } from '../gameplay/LevelSystem';
 
-/** Shared industrial material vocabulary; emissive materials are used only for information. */
+export interface BridgeVisual { setProgress: (progress: number) => void; }
+export interface NodeVisual {
+  group: THREE.Group;
+  ring: THREE.Mesh;
+  core: THREE.Mesh;
+  energy: THREE.MeshStandardMaterial;
+  halo: THREE.Sprite;
+}
+export interface StageVisuals {
+  bridges: BridgeVisual[];
+  nodes: NodeVisual[];
+  hazards: THREE.Group[];
+  pickups: THREE.Group[];
+  extraction: THREE.Group;
+}
+
+interface Batch { geometry: THREE.BufferGeometry; material: THREE.Material; transforms: THREE.Matrix4[]; }
+
+/** Authored modular facility kit; static repetition is instanced, live machinery remains separate. */
 export class SceneBuilder {
   readonly scene = new THREE.Scene();
-  readonly materials = {
-    abyss: new THREE.MeshStandardMaterial({ color: 0x0b1016, metalness: 0.12, roughness: 0.94 }),
-    graphite: new THREE.MeshStandardMaterial({ color: 0x182129, metalness: 0.65, roughness: 0.57 }),
-    steel: new THREE.MeshStandardMaterial({ color: 0x33424c, metalness: 0.78, roughness: 0.41 }),
-    deck: new THREE.MeshStandardMaterial({ color: 0x27343d, metalness: 0.53, roughness: 0.65 }),
-    inset: new THREE.MeshStandardMaterial({ color: 0x151e25, metalness: 0.38, roughness: 0.77 }),
-    silver: new THREE.MeshStandardMaterial({ color: 0xb2c4cc, metalness: 0.7, roughness: 0.29 }),
-    white: new THREE.MeshBasicMaterial({ color: 0xbfd3da }),
-    cyan: new THREE.MeshStandardMaterial({ color: 0x00a2c3, emissive: 0x00a8d3, emissiveIntensity: 1.45, metalness: 0.28, roughness: 0.24 }),
-    cyanDim: new THREE.MeshStandardMaterial({ color: 0x164d60, emissive: 0x006482, emissiveIntensity: 0.6, metalness: 0.55, roughness: 0.4 }),
-    amber: new THREE.MeshStandardMaterial({ color: 0xbf7540, emissive: 0xca640d, emissiveIntensity: 0.86, roughness: 0.45 }),
-  };
-  private stageGroup = new THREE.Group();
-  private readonly geometries = new Set<THREE.BufferGeometry>();
-  private readonly textures = new Set<THREE.Texture>();
-  private readonly localMaterials = new Set<THREE.Material>();
-  private readonly boxCache = new Map<string, THREE.BoxGeometry>();
-  private readonly bridges = new Map<string, THREE.Group>();
+  private readonly facility = new THREE.Group();
+  private readonly stage = new THREE.Group();
+  private readonly geometries = new Map<string, THREE.BufferGeometry>();
+  private readonly materials: THREE.Material[] = [];
+  private readonly stageResources: Array<THREE.Material | THREE.Texture> = [];
+  private readonly batches = new Map<string, Batch>();
+  private readonly ambientHalo: THREE.Texture;
+
+  readonly steel = this.material(0x34414b, .7, .43);
+  readonly darkSteel = this.material(0x19232c, .67, .55);
+  readonly graphite = this.material(0x101a22, .42, .72);
+  readonly deck = this.material(0x25343e, .47, .78);
+  readonly edge = this.material(0x738692, .75, .43);
+  readonly white = this.material(0xc1d0d8, .65, .37);
+  readonly recess = this.material(0x0b1219, .43, .77);
+  readonly energy = this.material(0x00a7cc, .26, .38, 1.3);
+  readonly dimEnergy = this.material(0x12637a, .28, .53, .55);
+  readonly amber = this.material(0xe89539, .28, .4, 1.12);
+  readonly danger = this.material(0x68462b, .45, .58);
 
   constructor() {
-    this.scene.background = new THREE.Color(0x080d14);
-    this.scene.fog = new THREE.FogExp2(0x0a111a, 0.013);
-    this.scene.add(new THREE.HemisphereLight(0xb5d1e2, 0x1b252d, 1.7));
-    const key = new THREE.DirectionalLight(0xc2e2ef, 3.1);
-    key.position.set(-7, 15, 8);
-    key.castShadow = true;
-    key.shadow.mapSize.set(1024, 1024);
-    key.shadow.camera.left = -22;
-    key.shadow.camera.right = 22;
-    key.shadow.camera.top = 22;
-    key.shadow.camera.bottom = -22;
-    key.shadow.camera.near = 0.5;
-    key.shadow.camera.far = 75;
-    key.shadow.bias = -0.0004;
-    key.shadow.normalBias = 0.018;
-    key.target.position.set(0, 0, 13);
-    this.scene.add(key, key.target);
-    const rim = new THREE.DirectionalLight(0x196080, 1.6);
-    rim.position.set(11, 7, 32);
+    this.scene.background = new THREE.Color('#070a10');
+    this.scene.fog = new THREE.FogExp2('#090e15', .0125);
+    this.scene.add(this.facility, this.stage);
+    this.scene.add(new THREE.HemisphereLight(0xd6e6ee, 0x121b23, 2.05));
+    const key = new THREE.DirectionalLight(0xe7f0f5, 3.2);
+    key.position.set(-8, 15, 12);
+    this.scene.add(key);
+    const rim = new THREE.DirectionalLight(0x76a8bc, 1.35);
+    rim.position.set(6, 10, -27);
     this.scene.add(rim);
+    this.ambientHalo = this.makeHaloTexture();
+    this.backdrop();
+    this.flush(this.facility);
   }
 
-  setQuality(shadows: boolean): void {
-    const light = this.scene.children.find((child): child is THREE.DirectionalLight => child instanceof THREE.DirectionalLight && child.castShadow);
-    if (light) light.castShadow = shadows;
-  }
-
-  private geometry(x: number, y: number, z: number): THREE.BoxGeometry {
-    const key = `${x.toFixed(3)}|${y.toFixed(3)}|${z.toFixed(3)}`;
-    let geometry = this.boxCache.get(key);
-    if (!geometry) {
-      geometry = new THREE.BoxGeometry(x, y, z);
-      this.boxCache.set(key, geometry);
-      this.geometries.add(geometry);
+  buildStage(layout: StageLayout): StageVisuals {
+    this.clearStage();
+    for (let i = 0; i < layout.platforms.length; i++) {
+      const pad = layout.platforms[i]!;
+      this.drawPlatform(pad.near, pad.far, pad.y, i, layout);
     }
+    for (const bridge of layout.bridges) this.gapFrame(bridge);
+    for (const hazard of layout.hazards) this.hazardTrack(hazard.z, hazard.y);
+    const bridges = layout.bridges.map(bridge => this.buildBridge(bridge, layout.spec.rushLane));
+    const nodes = layout.bridges.map(bridge => this.buildNode(bridge));
+    const hazards = layout.hazards.map(field => this.buildHazard(field.z, field.y));
+    const pickups = layout.pickups.map(item => this.buildPickup(item.x, item.z, item.y));
+    const extraction = this.buildExtraction(layout.finishZ, layout.platforms.at(-1)?.y ?? 0);
+    this.flush(this.stage);
+    return { bridges, nodes, hazards, pickups, extraction };
+  }
+
+  dispose(): void {
+    this.clearStage();
+    this.scene.remove(this.facility, this.stage);
+    for (const geometry of this.geometries.values()) geometry.dispose();
+    for (const material of this.materials) material.dispose();
+    this.ambientHalo.dispose();
+  }
+
+  private clearStage(): void {
+    this.stage.clear();
+    this.batches.clear();
+    for (const resource of this.stageResources) resource.dispose();
+    this.stageResources.length = 0;
+  }
+
+  private material(color: number, metalness: number, roughness: number, emission = 0): THREE.MeshStandardMaterial {
+    const m = new THREE.MeshStandardMaterial({ color, metalness, roughness,
+      emissive: emission ? color : 0x000000, emissiveIntensity: emission });
+    this.materials.push(m);
+    return m;
+  }
+
+  private geometry(key: string, make: () => THREE.BufferGeometry): THREE.BufferGeometry {
+    let geometry = this.geometries.get(key);
+    if (!geometry) { geometry = make(); this.geometries.set(key, geometry); }
     return geometry;
   }
 
-  private box(parent: THREE.Object3D, material: THREE.Material, x: number, y: number, z: number,
-    width: number, height: number, depth: number, shadow = false): THREE.Mesh {
-    const mesh = new THREE.Mesh(this.geometry(width, height, depth), material);
+  private box(w: number, h: number, d: number): THREE.BufferGeometry {
+    return this.geometry(`box:${w}:${h}:${d}`, () => new THREE.BoxGeometry(w, h, d));
+  }
+
+  private mesh(geometry: THREE.BufferGeometry, material: THREE.Material, parent: THREE.Object3D,
+    x = 0, y = 0, z = 0): THREE.Mesh {
+    const mesh = new THREE.Mesh(geometry, material);
     mesh.position.set(x, y, z);
-    mesh.castShadow = shadow;
-    mesh.receiveShadow = true;
     parent.add(mesh);
     return mesh;
   }
 
-  private label(parent: THREE.Object3D, text: string, x: number, y: number, z: number, width = 3): void {
+  private part(parent: THREE.Object3D, w: number, h: number, d: number, x: number, y: number, z: number,
+    material: THREE.Material): THREE.Mesh {
+    return this.mesh(this.box(w, h, d), material, parent, x, y, z);
+  }
+
+  private staticPart(w: number, h: number, d: number, x: number, y: number, z: number,
+    material: THREE.Material, yaw = 0): void {
+    const geometry = this.box(w, h, d);
+    const key = `${geometry.uuid}:${material.uuid}`;
+    let batch = this.batches.get(key);
+    if (!batch) { batch = { geometry, material, transforms: [] }; this.batches.set(key, batch); }
+    const matrix = new THREE.Matrix4();
+    matrix.compose(new THREE.Vector3(x, y, z), new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), yaw), new THREE.Vector3(1, 1, 1));
+    batch.transforms.push(matrix);
+  }
+
+  private flush(target: THREE.Group): void {
+    for (const batch of this.batches.values()) {
+      const mesh = new THREE.InstancedMesh(batch.geometry, batch.material, batch.transforms.length);
+      batch.transforms.forEach((matrix, i) => mesh.setMatrixAt(i, matrix));
+      mesh.instanceMatrix.needsUpdate = true;
+      mesh.computeBoundingSphere();
+      target.add(mesh);
+    }
+    this.batches.clear();
+  }
+
+  private drawPlatform(near: number, far: number, y: number, index: number, layout: StageLayout): void {
+    const length = near - far;
+    const mid = (near + far) * .5;
+    this.staticPart(8.25, .66, length, 0, y - .38, mid, this.steel);
+    this.staticPart(7.91, .045, length - .3, 0, y - .015, mid, this.deck);
+    this.staticPart(5.6, .44, length - .2, 0, y - .92, mid, this.darkSteel);
+    for (let z = far + 1.5; z < near - .9; z += 2.9) {
+      for (const side of [-1, 1]) {
+        this.staticPart(3.42, .038, 2.61, side * 1.82, y + .024, z, this.graphite);
+        this.staticPart(3.16, .013, 2.31, side * 1.82, y + .049, z, this.deck);
+        this.staticPart(.047, .019, 2.05, side * 3.29, y + .061, z, this.edge);
+      }
+      this.staticPart(.052, .032, 1.75, 0, y + .055, z, this.edge);
+      this.staticPart(7.7, .085, .15, 0, y - .045, z - 1.39, this.steel);
+    }
+    for (const side of [-1, 1]) {
+      this.staticPart(.25, .46, length, side * 4.19, y - .11, mid, this.darkSteel);
+      this.staticPart(.055, .028, length - .28, side * 3.83, y + .066, mid, this.dimEnergy);
+      this.staticPart(.2, 1.1, length, side * 4.48, y - 1.26, mid, this.steel);
+      for (let z = far + 1; z < near; z += 3.5) {
+        this.staticPart(.56, .73, .24, side * 4.7, y + .25, z, this.steel);
+        this.staticPart(.31, .08, .16, side * 4.74, y + .64, z, this.white);
+        this.staticPart(.1, 1.15, .13, side * 4.62, y - 1.1, z, this.darkSteel);
+      }
+      this.staticPart(.11, .1, length - .2, side * 4.69, y + .76, mid, this.edge);
+    }
+    // Maintenance channel on the banks. Dark insets are traversable, amber is warning only.
+    if (index < layout.spec.nodes) {
+      for (let stripe = 0; stripe < 4; stripe++) {
+        this.staticPart(.65, .013, .095, -1.45 + stripe * .92, y + .075, far + .68, this.danger, -.42);
+      }
+      for (const side of [-1, 1]) {
+        this.staticPart(.08, .018, 2.4, side * 1.47, y + .079, far + 2.6, this.amber);
+      }
+    }
+    // Purposeful rhythm: two articulated service portals per long platform.
+    const gantries = index === 0 ? [near - 4.5, far + 4] : [near - 8];
+    for (const z of gantries) this.gantry(z, y);
+  }
+
+  private gantry(z: number, y: number): void {
+    for (const side of [-1, 1]) {
+      this.staticPart(.94, 8.1, 1.2, side * 6.05, y + 3.8, z, this.steel);
+      this.staticPart(.39, 6.9, .42, side * 5.87, y + 3.7, z, this.darkSteel);
+      this.staticPart(.09, 3.4, .11, side * 5.65, y + 4.15, z + .3, this.edge);
+      this.staticPart(.26, .14, .29, side * 5.58, y + 6.14, z, this.dimEnergy);
+      this.staticPart(1.2, 1.07, 1.35, side * 6.05, y + .13, z, this.darkSteel);
+    }
+    this.staticPart(12.7, .62, 1.08, 0, y + 7.54, z, this.darkSteel);
+    this.staticPart(11.5, .11, .22, 0, y + 7.12, z, this.edge);
+    this.staticPart(1.32, .12, .24, 0, y + 7.02, z, this.white);
+  }
+
+  private gapFrame(bridge: BridgeLayout): void {
+    const z = (bridge.near + bridge.far) / 2;
+    for (const side of [-1, 1]) {
+      this.staticPart(.4, 1.4, 8.7, side * 4.6, (bridge.startY + bridge.endY) * .5 - .68, z, this.steel);
+      this.staticPart(.13, .12, 8.5, side * 4.57, (bridge.startY + bridge.endY) * .5 + .04, z, this.amber);
+      this.staticPart(.44, 5.4, .75, side * 6, bridge.startY + 1.7, bridge.near + .5, this.darkSteel);
+      this.staticPart(.44, 5.4, .75, side * 6, bridge.endY + 1.7, bridge.far - .5, this.darkSteel);
+    }
+    this.staticPart(8.3, .56, 1, 0, bridge.startY - 1.2, bridge.near, this.recess);
+    this.staticPart(8.3, .56, 1, 0, bridge.endY - 1.2, bridge.far, this.recess);
+  }
+
+  private buildBridge(bridge: BridgeLayout, rush: boolean): BridgeVisual {
+    const halves: THREE.Group[] = [];
+    const slope = Math.atan2(bridge.endY - bridge.startY, 8);
+    for (let i = 0; i < 2; i++) {
+      const half = new THREE.Group();
+      half.rotation.x = slope;
+      this.stage.add(half);
+      halves.push(half);
+      this.part(half, 3.92, .36, 4.07, 0, -.20, 0, this.steel);
+      this.part(half, 3.73, .058, 3.88, 0, .007, 0, this.deck);
+      for (const x of [-1.2, 0, 1.2]) {
+        this.part(half, .93, .023, 3.41, x, .049, 0, this.graphite);
+        this.part(half, .04, .029, 3.35, x + .49, .064, 0, this.edge);
+      }
+      for (const edge of [-1.94, 1.94]) {
+        this.part(half, .10, .14, 3.95, edge, .16, 0, this.energy);
+        this.part(half, .19, .28, 3.88, edge, -.19, 0, this.darkSteel);
+      }
+      for (const rib of [-1.45, 0, 1.45]) {
+        this.part(half, 3.88, .065, .075, 0, .085, rib, this.edge);
+      }
+      this.part(half, 2.8, .36, 3.65, 0, -.65, 0, this.graphite);
+      for (const side of [-1, 1]) this.part(half, .25, .55, 3.6, side * 1.69, -.73, 0, this.steel);
+      if (rush) {
+        this.part(half, 1.16, .24, 4.07, 3.04, -.15, 0, this.steel);
+        this.part(half, 1.01, .04, 3.91, 3.04, .002, 0, this.graphite);
+        this.part(half, .18, .017, 3.65, 3.04, .035, 0, this.amber);
+        for (const edge of [2.49, 3.59]) this.part(half, .055, .14, 3.96, edge, .13, 0, this.edge);
+      }
+    }
+    const first = halves[0]!;
+    const second = halves[1]!;
+    const middleY = (bridge.startY + bridge.endY) / 2;
+    const position = (progress: number): void => {
+      const eased = progress * progress * (3 - 2 * progress);
+      const hidden = 1 - eased;
+      first.position.set(0, (bridge.startY + middleY) / 2 - hidden * 2.4, bridge.near - 2 + hidden * 3.9);
+      second.position.set(0, (middleY + bridge.endY) / 2 - hidden * 2.4, bridge.far + 2 - hidden * 3.9);
+      first.rotation.z = -hidden * .035;
+      second.rotation.z = hidden * .035;
+    };
+    position(0);
+    return { setProgress: position };
+  }
+
+  private buildNode(bridge: BridgeLayout): NodeVisual {
+    const group = new THREE.Group();
+    group.position.set(bridge.nodeX, bridge.startY, bridge.nodeZ);
+    this.stage.add(group);
+    this.mesh(this.geometry('nodeBase', () => new THREE.CylinderGeometry(.59, .8, .25, 10)), this.steel, group, 0, .13, 0);
+    this.mesh(this.geometry('nodeStem', () => new THREE.CylinderGeometry(.31, .45, .87, 8)), this.darkSteel, group, 0, .65, 0);
+    this.mesh(this.geometry('nodeCap', () => new THREE.CylinderGeometry(.44, .39, .13, 10)), this.edge, group, 0, 1.11, 0);
+    this.part(group, .68, .68, .26, 0, 1.62, -.1, this.darkSteel);
+    this.part(group, .45, .53, .28, 0, 1.62, .06, this.recess);
+    const energy = new THREE.MeshStandardMaterial({ color: 0x00d7ff, metalness: .12, roughness: .23,
+      emissive: 0x00d7ff, emissiveIntensity: .48 });
+    this.stageResources.push(energy);
+    const ring = this.mesh(this.geometry('nodeRing', () => new THREE.TorusGeometry(.45, .052, 8, 32)), energy, group, 0, 1.62, .25);
+    this.mesh(this.geometry('nodeOuter', () => new THREE.TorusGeometry(.71, .08, 8, 32)), this.steel, group, 0, 1.62, .17);
+    const core = this.mesh(this.geometry('nodeCore', () => new THREE.IcosahedronGeometry(.27, 1)), energy, group, 0, 1.62, .26);
+    for (const side of [-1, 1]) {
+      this.part(group, .15, .33, .38, side * .61, 1.62, .1, this.edge);
+      this.part(group, .32, .12, .23, side * .47, 1.24, .12, this.graphite);
+      this.part(group, .07, .2, .08, side * .61, 1.62, .32, this.dimEnergy);
+    }
+    this.part(group, .14, .11, .4, 0, 2.32, .08, this.white);
+    const halo = new THREE.Sprite(new THREE.SpriteMaterial({ map: this.ambientHalo, color: 0x00d7ff,
+      transparent: true, blending: THREE.AdditiveBlending, depthWrite: false, opacity: .13 }));
+    this.stageResources.push(halo.material);
+    halo.position.set(0, 1.62, .13);
+    halo.scale.set(2.6, 2.6, 1);
+    group.add(halo);
+    const sign = this.makeSign(`SHIFT LINK 0${bridge.index + 1}    ◇`);
+    sign.position.set(0, 3.15, -.15);
+    group.add(sign);
+    return { group, ring, core, energy, halo };
+  }
+
+  private hazardTrack(z: number, y: number): void {
+    this.staticPart(7.8, .13, .32, 0, y + 2.82, z, this.edge);
+    for (const side of [-1, 1]) this.staticPart(.32, 3, .4, side * 4.03, y + 1.51, z, this.steel);
+    for (const offset of [-1.3, 1.3]) this.staticPart(7.6, .018, .075, 0, y + .086, z + offset, this.danger);
+    this.staticPart(7.6, .015, .045, 0, y + .091, z, this.amber);
+  }
+
+  private buildHazard(z: number, y: number): THREE.Group {
+    const gate = new THREE.Group();
+    gate.position.set(0, y, z);
+    this.stage.add(gate);
+    this.part(gate, 1.0, .31, .45, 0, 2.65, 0, this.steel);
+    this.part(gate, .55, 2.18, .28, 0, 1.43, 0, this.darkSteel);
+    this.part(gate, .35, 2.02, .065, 0, 1.42, .175, this.amber);
+    this.part(gate, .89, .2, .37, 0, .35, 0, this.danger);
+    for (const side of [-1, 1]) this.part(gate, .13, 1.6, .35, side * .36, 1.48, 0, this.edge);
+    return gate;
+  }
+
+  private buildPickup(x: number, z: number, y: number): THREE.Group {
+    const group = new THREE.Group();
+    group.position.set(x, y + .9, z);
+    this.stage.add(group);
+    const crystal = this.mesh(this.geometry('pickup', () => new THREE.OctahedronGeometry(.27, 0)), this.white, group);
+    crystal.rotation.z = Math.PI / 4;
+    this.mesh(this.geometry('pickupRing', () => new THREE.TorusGeometry(.38, .024, 4, 16)), this.energy, group);
+    this.mesh(this.geometry('pickupBase', () => new THREE.CylinderGeometry(.37, .37, .035, 12)), this.darkSteel, group, 0, -.73, 0);
+    return group;
+  }
+
+  private buildExtraction(z: number, y: number): THREE.Group {
+    const portal = new THREE.Group();
+    portal.position.set(0, y, z);
+    this.stage.add(portal);
+    for (const side of [-1, 1]) {
+      this.part(portal, .58, 4.4, .78, side * 2.67, 2.0, 0, this.darkSteel);
+      this.part(portal, .09, 3.5, .08, side * 2.31, 1.91, .42, this.energy);
+      this.part(portal, .92, .3, 1, side * 2.69, .13, 0, this.steel);
+    }
+    this.part(portal, 6.1, .72, 1.04, 0, 4.45, 0, this.steel);
+    this.part(portal, 4.7, .1, .14, 0, 4.02, .45, this.energy);
+    this.part(portal, 4.8, .026, .21, 0, .08, -.12, this.white);
+    this.part(portal, 1.15, .1, .1, 0, .09, 1.15, this.energy);
+    const label = this.makeSign('EXTRACTION   /   EXIT');
+    label.position.set(0, 5.33, .55);
+    portal.add(label);
+    return portal;
+  }
+
+  private makeSign(text: string): THREE.Mesh {
     const canvas = document.createElement('canvas');
-    canvas.width = 512;
-    canvas.height = 128;
+    canvas.width = 512; canvas.height = 100;
     const ctx = canvas.getContext('2d');
-    if (!ctx) return;
-    ctx.clearRect(0, 0, 512, 128);
-    ctx.font = '600 48px "Space Grotesk Variable", sans-serif';
-    ctx.textAlign = 'center';
-    ctx.fillStyle = '#b4c7ce';
-    ctx.fillText(text, 256, 74);
-    ctx.fillStyle = '#00b7d9';
-    ctx.fillRect(130, 94, 252, 3);
+    if (ctx) {
+      ctx.fillStyle = '#101b24'; ctx.fillRect(0, 0, 512, 100);
+      ctx.strokeStyle = '#607f8b'; ctx.lineWidth = 3; ctx.strokeRect(3, 3, 506, 94);
+      ctx.fillStyle = '#dce7ed'; ctx.font = '700 31px Arial'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillText(text, 256, 49);
+      ctx.fillStyle = '#00d7ff'; ctx.fillRect(9, 9, 25, 3);
+    }
     const texture = new THREE.CanvasTexture(canvas);
     texture.colorSpace = THREE.SRGBColorSpace;
-    this.textures.add(texture);
-    const mat = new THREE.MeshBasicMaterial({ map: texture, transparent: true, depthWrite: false, side: THREE.DoubleSide });
-    this.localMaterials.add(mat);
-    const geometry = new THREE.PlaneGeometry(width, width / 4);
-    this.geometries.add(geometry);
-    const mesh = new THREE.Mesh(geometry, mat);
-    mesh.rotation.x = -Math.PI / 2;
-    mesh.position.set(x, y + 0.09, z);
-    parent.add(mesh);
+    const material = new THREE.MeshBasicMaterial({ map: texture, side: THREE.DoubleSide, toneMapped: false });
+    this.stageResources.push(texture, material);
+    return this.mesh(this.geometry('signPlane', () => new THREE.PlaneGeometry(3.05, .6)), material, new THREE.Group());
   }
 
-  private buildSurface(surface: SurfaceSpec): void {
-    const { x, width, z0, z1, y0 } = surface;
-    const y1 = surface.y1 ?? y0;
-    const length = z1 - z0;
-    const slope = y1 - y0;
-    const path = Math.hypot(length, slope);
-    const span = new THREE.Group();
-    span.position.set(x, (y0 + y1) / 2, (z0 + z1) / 2);
-    span.rotation.x = -Math.atan2(slope, length);
-    this.stageGroup.add(span);
-    if (surface.kind === 'bridge') {
-      this.bridges.set(surface.id, span);
-      span.position.y -= 5;
+  private makeHaloTexture(): THREE.Texture {
+    const canvas = document.createElement('canvas');
+    canvas.width = canvas.height = 64;
+    const ctx = canvas.getContext('2d');
+    if (ctx) {
+      const gradient = ctx.createRadialGradient(32, 32, 0, 32, 32, 32);
+      gradient.addColorStop(0, 'rgba(255,255,255,.75)');
+      gradient.addColorStop(.25, 'rgba(255,255,255,.3)');
+      gradient.addColorStop(1, 'rgba(255,255,255,0)');
+      ctx.fillStyle = gradient; ctx.fillRect(0, 0, 64, 64);
     }
-    const isBridge = surface.kind === 'bridge';
-    this.box(span, this.materials.graphite, 0, -0.27, 0, width + 0.48, 0.55, path, true);
-    this.box(span, this.materials.steel, 0, 0.025, 0, width, 0.09, path - 0.08);
-    this.box(span, this.materials.inset, 0, 0.076, 0, width - 0.64, 0.035, path - 0.19);
-    // Bays of inset plates reveal scale and direction without turning the entire floor into cyan.
-    const count = Math.floor((path - 0.6) / 2.2);
-    for (let i = 0; i < count; i++) {
-      const dz = -path / 2 + 1.35 + i * 2.2;
-      this.box(span, this.materials.deck, 0, 0.105, dz, width - 1.12, 0.027, 1.92);
-      this.box(span, this.materials.graphite, 0, 0.12, dz + 0.83, width - 1.36, 0.012, 0.035);
-      if (i % 2 === 0) {
-        this.box(span, this.materials.silver, -width / 2 + 1.02, 0.123, dz, 0.025, 0.01, 0.62);
-        this.box(span, this.materials.silver, width / 2 - 1.02, 0.123, dz, 0.025, 0.01, 0.62);
-      }
-    }
+    return new THREE.CanvasTexture(canvas);
+  }
+
+  private backdrop(): void {
+    // Layered, structural silhouettes with selective practical lights.
     for (const side of [-1, 1]) {
-      this.box(span, this.materials.steel, side * (width / 2 + 0.1), 0.03, 0, 0.26, 0.33, path, true);
-      this.box(span, isBridge ? this.materials.cyanDim : this.materials.silver, side * (width / 2 + 0.1), 0.21, 0, 0.045, 0.018, path - 0.18);
-      this.box(span, this.materials.graphite, side * (width / 2 + 0.22), -0.52, 0, 0.12, 0.49, path);
-      if (isBridge) {
-        for (let i = 0; i < 4; i++) {
-          this.box(span, this.materials.cyan, side * (width / 2 - 0.18), -0.08, -path / 2 + 0.65 + i * (path - 1.3) / 3,
-            0.05, 0.08, 0.32);
-        }
+      for (let i = 0; i < 11; i++) {
+        const z = 12 - i * 14;
+        const x = side * (14 + i % 3 * 3.2);
+        this.staticPart(2.6, 13 + i % 3 * 4.4, 3.5, x, 2.8, z, this.graphite);
+        this.staticPart(3.2, .43, 3.8, x, 10.1 + i % 3 * 2.2, z, this.darkSteel);
+        this.staticPart(.15, .15, 2.25, x - side * 1.55, 7, z, i % 3 ? this.recess : this.danger);
+        this.staticPart(.35, 9, .48, side * 10.5, -2.8, z, this.steel);
+      }
+      for (let z = 2; z > -117; z -= 15) {
+        this.staticPart(.44, 11.5, 1.1, side * 6.9, -2.2, z, this.darkSteel);
+        this.staticPart(.22, 12, .18, side * 8.7, -2, z, this.edge);
       }
     }
-    if (isBridge) {
-      for (let i = 0; i < 3; i++) {
-        this.box(span, this.materials.steel, 0, -0.65, -path / 2 + 0.5 + i * (path - 1) / 2, width + 0.6, 0.2, 0.18);
-      }
-      this.box(this.stageGroup, this.materials.amber, x, y0 - 0.13, z0 + 0.08, width + 0.2, 0.04, 0.16);
-      this.box(this.stageGroup, this.materials.amber, x, y1 - 0.13, z1 - 0.08, width + 0.2, 0.04, 0.16);
+    for (let z = -21; z > -117; z -= 18) {
+      this.staticPart(15, 1.1, 1.6, 0, -9.5, z, this.graphite);
+      this.staticPart(16, .35, .5, 0, 10.5, z, this.darkSteel);
     }
-    if (surface.kind === 'deck' && length >= 13) {
-      const mark = Math.max(z0 + 3.8, z1 - 4);
-      this.label(this.stageGroup, '→  E X T R A C T', x, y0, mark, 3.8);
-    }
-  }
-
-  private buildInfrastructure(stage: StageConfig): void {
-    const limit = stage.finish.z + 19;
-    this.box(this.stageGroup, this.materials.abyss, 0, -9, limit / 2 - 7, 75, 1.1, limit + 35);
-    for (let z = -15; z < limit; z += 11) {
-      for (const side of [-1, 1]) {
-        const x = side * 10.6;
-        // H-shaped structural bays with recessed lighting and bolted shoulders.
-        this.box(this.stageGroup, this.materials.graphite, x, 1.6, z, 2.1, 20, 2.2, true);
-        this.box(this.stageGroup, this.materials.steel, x - side * 0.62, 2.4, z + 0.35, 0.24, 16, 0.3);
-        this.box(this.stageGroup, this.materials.inset, x - side * 0.8, 2.6, z + 0.53, 0.32, 11.2, 0.12);
-        this.box(this.stageGroup, this.materials.silver, x - side * 0.8, 7.2, z + 0.6, 0.12, 1.8, 0.03);
-        this.box(this.stageGroup, this.materials.cyanDim, x - side * 0.8, 5.3, z + 0.6, 0.075, 0.5, 0.04);
-        this.box(this.stageGroup, this.materials.steel, x, 9.6, z, 3.2, 0.9, 3.3);
-        this.box(this.stageGroup, this.materials.graphite, x, 11.7, z, 1.8, 3.3, 1.6);
-        this.box(this.stageGroup, this.materials.steel, x, -5.5, z, 1.6, 5, 1.6);
-        this.box(this.stageGroup, this.materials.inset, side * 16, 3.1, z + 3.5, 3, 17, 7);
-        this.box(this.stageGroup, this.materials.graphite, side * 17.5, 9.5, z + 3.5, 1.9, 5, 5);
-        this.box(this.stageGroup, this.materials.steel, side * 12.7, -1.6, z + 2.4, 3.3, 0.5, 7);
-        this.box(this.stageGroup, this.materials.inset, side * 12.7, -1.16, z + 2.4, 3.1, 0.16, 6.5);
-        // Small luminous service lamps provide cadence; no permanent neon walls.
-        this.box(this.stageGroup, this.materials.white, x - side * 0.8, 8.65, z + 0.62, 0.32, 0.055, 0.06);
-      }
-      this.box(this.stageGroup, this.materials.graphite, 0, 11.6, z, 21.2, 0.74, 1.4);
-      this.box(this.stageGroup, this.materials.steel, 0, 11.03, z, 18, 0.14, 0.8);
-      for (const x of [-5.5, 0, 5.5]) {
-        this.box(this.stageGroup, this.materials.white, x, 10.94, z, 1.8, 0.03, 0.2);
-      }
-      this.box(this.stageGroup, this.materials.steel, 0, -5.3, z + 5, 21, 0.5, 0.6);
-    }
-    // Far silhouettes continue past extraction to avoid a flat end-of-level wall.
-    for (const x of [-27, -23, 23, 27]) {
-      this.box(this.stageGroup, this.materials.inset, x, 8, limit - 3 + (x % 3) * 3, 4, 33, 4);
-      this.box(this.stageGroup, this.materials.steel, x, 14, limit - 3 + (x % 3) * 3, 4.4, 0.3, 4.4);
-    }
-  }
-
-  private buildFinish(stage: StageConfig): void {
-    const { x, y, z } = stage.finish;
-    for (const side of [-1, 1]) {
-      this.box(this.stageGroup, this.materials.graphite, x + side * 2.6, y + 2.1, z, 0.8, 4.5, 1.3, true);
-      this.box(this.stageGroup, this.materials.steel, x + side * 2.31, y + 2.2, z - 0.7, 0.13, 3.6, 0.14);
-      this.box(this.stageGroup, this.materials.cyan, x + side * 2.28, y + 2.2, z - 0.78, 0.05, 3.3, 0.04);
-      this.box(this.stageGroup, this.materials.steel, x + side * 2.6, y + 4.5, z, 1.05, 0.35, 1.4);
-    }
-    this.box(this.stageGroup, this.materials.graphite, x, y + 4.65, z, 5.7, 0.75, 1.5);
-    this.box(this.stageGroup, this.materials.silver, x, y + 4.24, z - 0.79, 2.4, 0.045, 0.06);
-    this.box(this.stageGroup, this.materials.cyan, x, y + 0.13, z, 4.2, 0.025, 0.11);
-    this.label(this.stageGroup, 'E X T R A C T I O N', x, y, z - 1.6, 4.1);
-  }
-
-  buildStage(stage: StageConfig): void {
-    this.clearStage();
-    this.stageGroup = new THREE.Group();
-    this.stageGroup.name = `Sector ${stage.code}`;
-    this.scene.add(this.stageGroup);
-    this.buildInfrastructure(stage);
-    for (const surface of stage.surfaces) this.buildSurface(surface);
-    this.buildFinish(stage);
-    this.label(this.stageGroup, `S E C T O R   ${stage.code.substring(0, 2)}`, 0, stage.spawn.y, stage.spawn.z + 3.4, 4);
-  }
-
-  setBridgeProgress(id: string, progress: number): void {
-    const bridge = this.bridges.get(id);
-    if (!bridge) return;
-    const surfaceHeight = bridge.userData.originalY as number | undefined;
-    if (surfaceHeight === undefined) bridge.userData.originalY = bridge.position.y + 5;
-    bridge.position.y = (bridge.userData.originalY as number) - 5 * (1 - progress);
-    bridge.visible = progress > 0.015;
-  }
-
-  private clearStage(): void {
-    this.scene.remove(this.stageGroup);
-    this.stageGroup.clear();
-    this.bridges.clear();
-    for (const geom of this.geometries) geom.dispose();
-    for (const texture of this.textures) texture.dispose();
-    for (const material of this.localMaterials) material.dispose();
-    this.geometries.clear();
-    this.textures.clear();
-    this.localMaterials.clear();
-    this.boxCache.clear();
-  }
-  dispose(): void {
-    this.clearStage();
-    for (const material of Object.values(this.materials)) material.dispose();
   }
 }

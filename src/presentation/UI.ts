@@ -1,167 +1,203 @@
-import type { Input, Control } from '../core/Input';
-import type { StageConfig } from '../gameplay/LevelSystem';
+import { STAGES } from '../gameplay/LevelSystem';
+import type { RunResult, SaveData, Skin } from '../gameplay/Progression';
 
-export interface ResultView {
-  won: boolean;
-  stage: StageConfig;
-  time: number;
-  score: number;
-  best: number;
-  bestTime: number | null;
-  combo: number;
-  cores: number;
-  unlocked: string | null;
-  breakdown: { label: string; value: number }[];
-}
-export interface HUDView { time: number; score: number; combo: number; progress: number; cores: number; goal: string; stage: StageConfig; }
+export type UIAction = { type: 'pause' | 'resume' | 'restart' | 'next' | 'stage' | 'equip' | 'mute'; value?: number | Skin };
 
-const timecode = (seconds: number): string => `${String(Math.floor(seconds / 60)).padStart(2, '0')}:${(seconds % 60).toFixed(2).padStart(5, '0')}`;
-const num = (value: number): string => Math.round(value).toLocaleString('en-US');
+const seconds = (time: number): string => `${String(Math.floor(time / 60)).padStart(2, '0')}:${(time % 60).toFixed(2).padStart(5, '0')}`;
+const number = (value: number): string => value.toLocaleString('en-US');
 
-/** All DOM presentation lives here; interaction callbacks remain owned by Game. */
+/** DOM only: receives state snapshots, dispatches intentions, never edits gameplay state. */
 export class UI {
-  private readonly root: HTMLElement;
+  readonly viewport: HTMLElement;
   private readonly timer: HTMLElement;
   private readonly score: HTMLElement;
   private readonly combo: HTMLElement;
-  private readonly cores: HTMLElement;
   private readonly objective: HTMLElement;
   private readonly sector: HTMLElement;
-  private readonly progress: HTMLElement;
+  private readonly intro: HTMLElement;
+  private readonly introIndex: HTMLElement;
+  private readonly introTitle: HTMLElement;
+  private readonly introText: HTMLElement;
+  private readonly guidance: HTMLElement;
   private readonly prompt: HTMLElement;
-  private readonly notice: HTMLElement;
+  private readonly promptText: HTMLElement;
+  private readonly bridgeTimer: HTMLElement;
   private readonly overlay: HTMLElement;
-  private readonly input: Input;
-  private noticeTimer = 0;
-  private introTimer = 9;
-  private mode: 'gameplay' | 'paused' | 'results' = 'gameplay';
-  onPause?: () => void;
-  onResume?: () => void;
-  onRestart?: () => void;
-  onContinue?: () => void;
-  onSelectStage?: (index: number) => void;
-  onMute?: () => void;
+  private readonly notice: HTMLElement;
+  private readonly hud: HTMLElement;
+  private noticeHandle = 0;
+  private lastHint = '';
 
-  constructor(root: HTMLElement, input: Input) {
-    this.root = root;
-    this.input = input;
+  constructor(private readonly root: HTMLElement, private readonly onAction: (action: UIAction) => void) {
     root.innerHTML = `
-      <div class="screen-grain" aria-hidden="true"></div>
-      <div class="hud" id="hud">
-        <header class="top-bar">
-          <div class="identity"><div class="brand">FORGE<span>//</span>SHIFT</div><div class="brand-caption">FACILITY TRAVERSAL DIVISION <b>·</b> 01—06</div></div>
-          <div class="run-clock"><span class="eyebrow">RUN TIME <i></i> LIVE</span><strong id="timer">00:00.00</strong></div>
-          <div class="top-actions"><div class="score-cluster"><div><span class="eyebrow">SCORE</span><strong id="score">0</strong></div><div><span class="eyebrow">CHAIN</span><strong id="combo">×1</strong></div></div><button class="icon-button" data-action="pause" title="Pause (P or Esc)" aria-label="Pause game">Ⅱ</button><button class="icon-button sound-toggle" data-action="mute" title="Toggle sound" aria-label="Toggle sound">◖))</button></div>
+      <div id="viewport" aria-label="FORGE//SHIFT game world"></div>
+      <div class="hud">
+        <header class="topbar">
+          <div class="identity"><div class="brand">FORGE<span>//</span>SHIFT</div><div class="subtitle" id="sector">SECTOR 01 — FOUNDATION</div>
+            <div class="score-line"><div><span class="eyebrow">SCORE</span><strong id="score">0000</strong></div><div><span class="eyebrow">COMBO</span><strong id="combo">×0</strong></div></div>
+          </div>
+          <div class="time-block"><span class="eyebrow">RUN TIME</span><strong id="timer">00:00.00</strong><span id="bridge-timer" class="bridge-timer" hidden>BRIDGE · 00s</span></div>
+          <div class="mission"><span class="eyebrow">CURRENT OBJECTIVE</span><strong id="objective">REACH THE SHIFT NODE</strong>
+            <button class="pause-button" data-action="pause" aria-label="Pause game">II <span>PAUSE</span></button></div>
         </header>
-        <div class="sector-line"><div class="sector-name"><span class="eyebrow">CURRENT SECTOR</span><span id="sector">01 / FOUNDATION</span></div><div class="route-progress"><span>ENTRY</span><div class="progress-track"><div id="progress"></div></div><span>EXIT</span></div><div class="core-count" title="Cores collected this run"><span class="core-glyph">◇</span><b id="cores">0</b></div></div>
-        <div class="goal"><span class="goal-dot"></span><span id="objective">Find the Shift Node</span></div>
-        <div class="context-prompt" id="prompt" aria-live="polite"></div>
-        <div class="notice" id="notice" aria-live="polite"></div>
-        <div class="bottom-bar"><div class="intro" id="intro"><span class="eyebrow">SYSTEM BRIEF / 01</span><strong>THE ROUTE IS NOT FIXED.</strong><span>Move with <kbd>W A S D</kbd> or <kbd>↑ ← ↓ →</kbd><br>Approach a node. Press <kbd>E</kbd> or <kbd>SPACE</kbd> to SHIFT.</span></div><div class="controls-hint">WASD / ARROWS <em>MOVE</em><span></span>E / SPACE <em>SHIFT</em></div></div>
+        <div class="intro" id="intro"><div class="intro-rule"></div><span id="intro-index">01 / 06</span><h1 id="intro-title">THE FIRST<br/><em>CONNECTION.</em></h1><p id="intro-text">Deploy the missing bridge.</p></div>
+        <div class="prompt" id="prompt" hidden><div class="prompt-icon">◇</div><div><span>SHIFT NODE IN RANGE</span><strong id="prompt-text">E / SPACE · DEPLOY BRIDGE</strong></div><div class="prompt-pulse"></div></div>
+        <div class="notice" id="notice" role="status" aria-live="polite" hidden></div>
+        <div class="guidance" id="guidance"><span class="line"></span><div class="instruction">MOVE <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd><span class="divider">/</span><kbd>↑</kbd><kbd>←</kbd><kbd>↓</kbd><kbd>→</kbd><span class="divider">•</span> SHIFT <kbd>E</kbd></div><span class="line"></span></div>
       </div>
-      <div class="touch-controls" id="touch-controls" aria-label="Touch controls">
-        <div class="touch-dpad"><button data-control="forward" aria-label="Move forward">↑</button><button data-control="left" aria-label="Move left">←</button><button data-control="backward" aria-label="Move backward">↓</button><button data-control="right" aria-label="Move right">→</button></div>
-        <button class="touch-shift" data-control="shift" aria-label="Activate Shift">SHIFT <small>◇</small></button>
-      </div>
-      <div class="overlay" id="overlay" hidden></div>
-    `;
-    const get = (id: string): HTMLElement => {
-      const element = root.querySelector<HTMLElement>(`#${id}`);
-      if (!element) throw new Error(`Missing UI element #${id}`);
-      return element;
+      <div class="touch-controls" aria-label="Touch movement controls"><div class="dpad"><button data-control="forward" class="up" aria-label="Forward">↑</button><button data-control="left" class="left" aria-label="Left">←</button><button data-control="backward" class="down" aria-label="Backward">↓</button><button data-control="right" class="right" aria-label="Right">→</button></div><button class="touch-action" data-control="interact" aria-label="Deploy shift bridge">SHIFT</button></div>
+      <div class="orientation-note">LANDSCAPE RECOMMENDED FOR THE BEST VIEW</div>
+      <div class="overlay" id="overlay" hidden></div>`;
+    const get = (selector: string): HTMLElement => {
+      const node = root.querySelector<HTMLElement>(selector);
+      if (!node) throw new Error(`UI element missing: ${selector}`);
+      return node;
     };
-    this.timer = get('timer'); this.score = get('score'); this.combo = get('combo');
-    this.cores = get('cores'); this.objective = get('objective'); this.sector = get('sector');
-    this.progress = get('progress'); this.prompt = get('prompt'); this.notice = get('notice'); this.overlay = get('overlay');
-    root.querySelector('[data-action="pause"]')?.addEventListener('click', () => this.onPause?.());
-    root.querySelector('[data-action="mute"]')?.addEventListener('click', () => this.onMute?.());
-    for (const element of root.querySelectorAll<HTMLElement>('[data-control]')) {
-      const control = element.dataset.control as Control;
-      element.addEventListener('pointerdown', (event) => {
-        event.preventDefault(); element.setPointerCapture(event.pointerId); this.input.press(control);
-        element.classList.add('down');
-      });
-      const release = (event: PointerEvent) => {
-        event.preventDefault(); this.input.release(control); element.classList.remove('down');
-      };
-      element.addEventListener('pointerup', release);
-      element.addEventListener('pointercancel', release);
-      element.addEventListener('lostpointercapture', () => { this.input.release(control); element.classList.remove('down'); });
-    }
+    this.viewport = get('#viewport');
+    this.timer = get('#timer');
+    this.score = get('#score');
+    this.combo = get('#combo');
+    this.objective = get('#objective');
+    this.sector = get('#sector');
+    this.intro = get('#intro');
+    this.introIndex = get('#intro-index');
+    this.introTitle = get('#intro-title');
+    this.introText = get('#intro-text');
+    this.guidance = get('#guidance');
+    this.prompt = get('#prompt');
+    this.promptText = get('#prompt-text');
+    this.bridgeTimer = get('#bridge-timer');
+    this.overlay = get('#overlay');
+    this.notice = get('#notice');
+    this.hud = get('.hud');
+    root.addEventListener('click', this.click);
   }
 
-  update(dt: number, view: HUDView): void {
-    if (this.mode !== 'gameplay') return;
-    this.timer.textContent = timecode(view.time);
-    this.score.textContent = num(view.score);
-    this.combo.textContent = `×${view.combo}`;
-    this.cores.textContent = `${view.cores}`;
-    this.sector.textContent = view.stage.code;
-    this.objective.textContent = view.goal;
-    this.progress.style.width = `${Math.max(0, Math.min(100, view.progress * 100))}%`;
-    if (this.noticeTimer > 0 && (this.noticeTimer -= dt) <= 0) this.notice.classList.remove('visible');
-    if (this.introTimer > 0 && (this.introTimer -= dt) <= 0) this.root.querySelector('#intro')?.classList.add('dismissed');
-  }
-
-  dismissIntro(): void { this.introTimer = 0; this.root.querySelector('#intro')?.classList.add('dismissed'); }
-  showPrompt(title: string, description: string, progress = 0): void {
-    this.prompt.innerHTML = `<span class="prompt-icon">E <small>/</small> SPACE</span><span class="prompt-copy"><b>${title}</b><small>${description}</small></span><span class="prompt-charge" style="--charge:${Math.min(100, progress * 100)}%"></span>`;
-    this.prompt.classList.add('visible');
-  }
-  hidePrompt(): void { this.prompt.classList.remove('visible'); }
-  toast(title: string, description = '', duration = 2.5): void {
-    this.notice.innerHTML = `<b>${title}</b><span>${description}</span>`;
-    this.noticeTimer = duration;
-    this.notice.classList.add('visible');
-  }
-  clearOverlay(): void {
+  enterStage(index: number, progress: SaveData): void {
+    const stage = STAGES[index]!;
     this.overlay.hidden = true;
-    this.overlay.innerHTML = '';
-    this.mode = 'gameplay';
-    this.root.querySelector('.hud')?.classList.remove('dimmed');
+    this.hud.classList.remove('dimmed');
+    this.sector.textContent = `SECTOR ${String(index + 1).padStart(2, '0')}   —   ${stage.name}`;
+    this.introIndex.textContent = `${String(index + 1).padStart(2, '0')} / 06`;
+    const words = stage.callSign.split(' ');
+    this.introTitle.innerHTML = `${words.slice(0, -1).join(' ')}<br/><em>${words.at(-1)}.</em>`;
+    this.introText.textContent = stage.briefing;
+    this.intro.classList.add('visible');
+    this.guidance.classList.toggle('revealed', progress.completions > 0);
+    this.objective.textContent = 'FIND THE SHIFT NODE ↗';
+    this.score.textContent = '0000';
+    this.combo.textContent = '×0';
+    this.timer.textContent = '00:00.00';
+    this.prompt.hidden = true;
+    this.bridgeTimer.hidden = true;
+    this.notice.hidden = true;
   }
 
-  showPause(stageIndex: number, unlocked: number, stages: readonly StageConfig[], suit: string): void {
-    this.mode = 'paused';
-    this.root.querySelector('.hud')?.classList.add('dimmed');
-    this.overlay.hidden = false;
-    const list = stages.map((stage, index) =>
-      `<button class="stage-choice ${index === stageIndex ? 'selected' : ''}" data-stage="${index}" ${index > unlocked ? 'disabled' : ''}><span>${stage.code}</span><b>${stage.name}</b><small>${index > unlocked ? 'LOCKED' : index === stageIndex ? 'CURRENT' : 'AVAILABLE'}</small></button>`).join('');
-    this.overlay.innerHTML = `<section class="dialog pause-dialog" aria-label="Paused">
-      <div class="eyebrow">SYSTEM / STANDBY</div><h1>RUN PAUSED<span>.</span></h1><p>Take a breath. The facility will wait.</p>
-      <div class="dialog-actions"><button class="button primary" data-action="resume">RESUME RUN <span>↗</span></button><button class="button secondary" data-action="restart">RESTART SECTOR</button></div>
-      <div class="dialog-divider"></div><div class="eyebrow">SECTOR SELECT · ${suit.toUpperCase()} SUIT</div><div class="stage-grid">${list}</div>
-      <div class="dialog-foot">P / ESC TO RESUME <span>FORGE//SHIFT</span></div>
-    </section>`;
-    this.overlay.querySelector('[data-action="resume"]')?.addEventListener('click', () => this.onResume?.());
-    this.overlay.querySelector('[data-action="restart"]')?.addEventListener('click', () => this.onRestart?.());
-    for (const button of this.overlay.querySelectorAll<HTMLElement>('[data-stage]')) {
-      button.addEventListener('click', () => this.onSelectStage?.(Number(button.dataset.stage)));
+  update(time: number, score: number, combo: number, hint: string | null, bridgeTime: number | null, stageIndex: number, shifts: number): void {
+    this.timer.textContent = seconds(time);
+    this.score.textContent = number(score).padStart(4, '0');
+    this.combo.textContent = `×${combo}`;
+    this.combo.classList.toggle('active', combo > 1);
+    this.intro.classList.toggle('visible', time < 5.3);
+    this.guidance.classList.toggle('faded', time > 14 || shifts > 0);
+    this.objective.textContent = shifts < STAGES[stageIndex]!.nodes ? 'SHIFT TO OPEN THE ROUTE ↗' : 'REACH EXTRACTION ↗';
+    this.prompt.hidden = !hint;
+    if (hint && hint !== this.lastHint) this.promptText.textContent = hint;
+    this.lastHint = hint ?? '';
+    this.bridgeTimer.hidden = bridgeTime === null;
+    if (bridgeTime !== null) {
+      this.bridgeTimer.textContent = `BRIDGE RETRACTS · ${Math.ceil(bridgeTime)}s`;
+      this.bridgeTimer.classList.toggle('urgent', bridgeTime < 5);
     }
   }
 
-  showResults(view: ResultView, hasNext: boolean): void {
-    this.mode = 'results';
-    this.root.querySelector('.hud')?.classList.add('dimmed');
+  notify(message: string, kind: 'cyan' | 'amber' = 'cyan'): void {
+    window.clearTimeout(this.noticeHandle);
+    this.notice.textContent = message;
+    this.notice.dataset.kind = kind;
+    this.notice.hidden = false;
+    this.noticeHandle = window.setTimeout(() => { this.notice.hidden = true; }, 2300);
+  }
+
+  showPause(stage: number, progress: SaveData): void {
+    this.hud.classList.add('dimmed');
     this.overlay.hidden = false;
-    const title = view.won ? 'SECTOR CLEARED' : 'SIGNAL LOST';
-    const breakdown = view.breakdown.map(item => `<div><span>${item.label}</span><b>+${num(item.value)}</b></div>`).join('');
-    this.overlay.innerHTML = `<section class="dialog results-dialog ${view.won ? 'success' : 'failure'}" aria-label="Run result">
-      <div class="eyebrow">${view.stage.code} · ${view.won ? 'RUN ARCHIVED' : 'RUN TERMINATED'}</div>
-      <h1>${title}<span>.</span></h1><p>${view.won ? 'The route was never fixed. You made it yours.' : 'The facility resets. Your next line can be cleaner.'}</p>
-      <div class="result-hero"><div><span class="eyebrow">FINAL SCORE</span><strong>${num(view.score)}</strong><small>PERSONAL BEST ${num(view.best)}</small></div><div><span class="eyebrow">RUN TIME</span><strong>${timecode(view.time)}</strong><small>${view.bestTime === null ? 'NO RECORD YET' : `BEST ${timecode(view.bestTime)}`}</small></div></div>
-      <div class="result-breakdown">${breakdown}</div>
-      <div class="result-rewards"><span>MAX CHAIN <b>×${view.combo}</b></span><span>CORES EARNED <b>+${view.cores}</b></span></div>
-      ${view.unlocked ? `<div class="unlock-banner">◆ &nbsp; ${view.unlocked}</div>` : ''}
-      <div class="dialog-actions"><button class="button primary" data-action="restart">RUN AGAIN <span>↗</span></button>${hasNext && view.won ? '<button class="button secondary" data-action="continue">NEXT SECTOR →</button>' : ''}</div>
-      <div class="dialog-foot">R / ENTER TO RETRY <span>FORGE//SHIFT</span></div>
+    this.overlay.innerHTML = `<div class="overlay-shade"></div><section class="panel pause-panel" role="dialog" aria-modal="true" aria-label="Game paused">
+      <div class="panel-top"><span class="eyebrow">FORGE//SHIFT  /  SYSTEM PAUSED</span><span class="panel-cross">◇</span></div>
+      <h2>TAKE A BREATH<span>.</span></h2><p class="panel-sub">Your run is paused. Resume whenever you're ready.</p>
+      <div class="panel-actions"><button class="action primary" data-action="resume">RESUME RUN <b>→</b></button><button class="action secondary" data-action="restart">RESTART STAGE ↺</button></div>
+      <div class="panel-rule"></div><span class="eyebrow">SELECT SECTOR</span>${this.stageButtons(progress, stage)}
+      <div class="panel-rule"></div><span class="eyebrow">SUIT FINISH <span class="muted-label">COSMETIC ONLY</span></span>${this.skinButtons(progress)}
+      <button class="sound-toggle" data-action="mute">AUDIO ${progress.muted ? 'OFF' : 'ON'} ${progress.muted ? '◌' : '♫'}</button>
+      <p class="panel-footer">WASD / ARROWS · MOVE &nbsp;&nbsp; E / SPACE · SHIFT &nbsp;&nbsp; P / ESC · PAUSE</p>
     </section>`;
-    this.overlay.querySelector('[data-action="restart"]')?.addEventListener('click', () => this.onRestart?.());
-    this.overlay.querySelector('[data-action="continue"]')?.addEventListener('click', () => this.onContinue?.());
+    this.overlay.querySelector<HTMLElement>('[data-action="resume"]')?.focus();
   }
-  setMuted(muted: boolean): void {
-    const button = this.root.querySelector('.sound-toggle');
-    if (button) button.textContent = muted ? '◖×' : '◖))';
+
+  showResult(result: RunResult, progress: SaveData): void {
+    this.hud.classList.add('dimmed');
+    this.overlay.hidden = false;
+    const won = result.outcome === 'complete';
+    const status = won ? 'RUN COMPLETE' : result.outcome === 'hazard' ? 'FIELD CONTACT' : result.outcome === 'timeout' ? 'TIME EXPIRED' : 'ROUTE LOST';
+    const detail = won ? (result.newBestTime ? 'NEW PERSONAL BEST // EXTRACTION CONFIRMED' : 'EXTRACTION CONFIRMED // GO FASTER')
+      : result.outcome === 'hazard' ? 'Read the amber sweep. Move around it.'
+      : result.outcome === 'timeout' ? 'The system closed. Chain your shifts faster.'
+      : 'You left the walkway. Stay on the deck and Shift before a gap.';
+    const next = won && result.stage < STAGES.length - 1;
+    const best = progress.best[result.stage];
+    this.overlay.innerHTML = `<div class="overlay-shade"></div><section class="panel result-panel" role="dialog" aria-modal="true" aria-label="${status}">
+      <div class="panel-top"><span class="eyebrow">SECTOR ${String(result.stage + 1).padStart(2, '0')} / ${STAGES[result.stage]!.name}</span><span class="panel-cross">${won ? '◇' : '×'}</span></div>
+      <span class="result-kicker ${won ? '' : 'warning'}">${won ? 'MISSION ACCOMPLISHED' : 'SIGNAL INTERRUPTED'}</span>
+      <h2>${status}<span>.</span></h2><p class="panel-sub">${detail}</p>
+      <div class="result-stats"><div><span>TIME</span><strong>${seconds(result.time)}</strong></div><div><span>SCORE</span><strong>${number(result.score)}</strong></div><div><span>BEST COMBO</span><strong>×${result.combo}</strong></div></div>
+      <div class="result-breakdown"><span>${result.shifts} SHIFT${result.shifts === 1 ? '' : 'S'} · ${result.pickups} CORE${result.pickups === 1 ? '' : 'S'} · ${result.cleanPasses} CLEAN PASS${result.cleanPasses === 1 ? '' : 'ES'}</span><span>${won ? `+${number(result.bonus)} FINISH` : 'RETRY FOR THE FINISH BONUS'}</span></div>
+      <div class="reward"><div><span class="eyebrow">CORE BANK</span><strong>+${result.reward} <span>◇</span></strong></div><div><span class="eyebrow">TOTAL</span><strong>${progress.cores} <span>◇</span></strong></div>${result.newUnlock ? `<span class="new-unlock">NEW SUIT FINISH: ${result.newUnlock.toUpperCase()}</span>` : ''}</div>
+      <div class="best-line">${best ? `PERSONAL BEST  ${number(best.score)} PTS  /  ${seconds(best.time)}` : 'COMPLETE THE STAGE TO SET A PERSONAL BEST'}</div>
+      <div class="panel-actions"><button class="action primary" data-action="restart">RUN AGAIN <b>↺</b></button>${next ? '<button class="action secondary" data-action="next">NEXT SECTOR →</button>' : ''}</div>
+      <div class="panel-rule"></div><span class="eyebrow">SECTOR SELECT</span>${this.stageButtons(progress, result.stage)}
+      <div class="panel-rule"></div><span class="eyebrow">SUIT FINISH <span class="muted-label">COSMETIC ONLY</span></span>${this.skinButtons(progress)}
+      <p class="panel-footer">R · INSTANT RETRY &nbsp; / &nbsp; SELECT ANY UNLOCKED SECTOR</p>
+    </section>`;
+    this.overlay.querySelector<HTMLElement>('[data-action="restart"]')?.focus();
   }
-  dispose(): void { this.root.replaceChildren(); }
+
+  hideOverlay(): void {
+    this.overlay.hidden = true;
+    this.hud.classList.remove('dimmed');
+  }
+
+  refreshPause(stage: number, progress: SaveData): void {
+    this.showPause(stage, progress);
+  }
+
+  refreshResult(result: RunResult, progress: SaveData): void {
+    this.showResult(result, progress);
+  }
+
+  dispose(): void {
+    this.root.removeEventListener('click', this.click);
+    window.clearTimeout(this.noticeHandle);
+  }
+
+  private stageButtons(progress: SaveData, current: number): string {
+    return `<div class="stage-select">${STAGES.map((stage, index) => {
+      const unlocked = index <= progress.unlocked;
+      return `<button data-action="stage" data-value="${index}" ${unlocked ? '' : 'disabled'} class="stage-choice ${index === current ? 'selected' : ''}" title="${stage.name}"><span>0${index + 1}</span><small>${unlocked ? stage.name : 'LOCKED'}</small></button>`;
+    }).join('')}</div>`;
+  }
+
+  private skinButtons(progress: SaveData): string {
+    const options: Array<[Skin, number, string]> = [['ice', 0, 'GLACIER'], ['ember', 8, 'EMBER'], ['ghost', 22, 'SPECTER']];
+    return `<div class="skin-select">${options.map(([skin, cost, name]) => `<button data-action="equip" data-value="${skin}" ${progress.cores < cost ? 'disabled' : ''} class="skin-choice ${skin} ${progress.skin === skin ? 'selected' : ''}"><i></i>${name}<small>${progress.cores < cost ? `${cost} CORES` : skin === progress.skin ? 'EQUIPPED' : 'SELECT'}</small></button>`).join('')}</div>`;
+  }
+
+  private readonly click = (event: MouseEvent): void => {
+    const button = (event.target as Element).closest<HTMLButtonElement>('[data-action]');
+    if (!button || button.disabled) return;
+    const type = button.dataset.action as UIAction['type'];
+    const value = button.dataset.value;
+    if (type === 'stage') this.onAction({ type, value: Number(value) });
+    else if (type === 'equip') this.onAction({ type, value: value as Skin });
+    else this.onAction({ type });
+  };
 }
