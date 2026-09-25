@@ -65,6 +65,7 @@ export class ShiftSystem {
       visual.core.rotation.z += dt * .34;
       visual.ring.rotation.z = Math.sin(this.phase * (this.target[i] ? 2.4 : 1.1)) * .12;
       (visual.halo.material as THREE.SpriteMaterial).opacity = this.target[i] ? .28 : nearby ? .23 : .12;
+      (visual.floorGlow.material as THREE.MeshBasicMaterial).opacity = this.target[i] ? .28 : nearby ? .19 : .08;
       visual.group.scale.setScalar(nearby && !this.target[i] ? 1 + Math.sin(this.phase * 4) * .012 : 1);
     }
   }

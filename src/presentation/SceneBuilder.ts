@@ -8,6 +8,7 @@ export interface NodeVisual {
   core: THREE.Mesh;
   energy: THREE.MeshStandardMaterial;
   halo: THREE.Sprite;
+  floorGlow: THREE.Mesh;
 }
 export interface StageVisuals {
   bridges: BridgeVisual[];
@@ -29,6 +30,7 @@ export class SceneBuilder {
   private readonly stageResources: Array<THREE.Material | THREE.Texture> = [];
   private readonly batches = new Map<string, Batch>();
   private readonly ambientHalo: THREE.Texture;
+  private readonly microMetal: THREE.Texture;
 
   readonly steel = this.material(0x34414b, .7, .43);
   readonly darkSteel = this.material(0x19232c, .67, .55);
@@ -54,7 +56,12 @@ export class SceneBuilder {
     rim.position.set(6, 10, -27);
     this.scene.add(rim);
     this.ambientHalo = this.makeHaloTexture();
+    this.microMetal = this.makeMetalSurface();
+    this.deck.map = this.microMetal;
+    this.steel.map = this.microMetal;
+    this.deck.needsUpdate = this.steel.needsUpdate = true;
     this.backdrop();
+    this.turbineBanks();
     this.flush(this.facility);
   }
 
@@ -81,6 +88,7 @@ export class SceneBuilder {
     for (const geometry of this.geometries.values()) geometry.dispose();
     for (const material of this.materials) material.dispose();
     this.ambientHalo.dispose();
+    this.microMetal.dispose();
   }
 
   private clearStage(): void {
@@ -131,6 +139,22 @@ export class SceneBuilder {
     batch.transforms.push(matrix);
   }
 
+  private staticBeam(ax: number, ay: number, az: number, bx: number, by: number, bz: number,
+    thickness: number, material: THREE.Material): void {
+    const start = new THREE.Vector3(ax, ay, az);
+    const end = new THREE.Vector3(bx, by, bz);
+    const direction = end.clone().sub(start);
+    const geometry = this.box(thickness, thickness, direction.length());
+    const key = `${geometry.uuid}:${material.uuid}`;
+    let batch = this.batches.get(key);
+    if (!batch) { batch = { geometry, material, transforms: [] }; this.batches.set(key, batch); }
+    batch.transforms.push(new THREE.Matrix4().compose(
+      start.add(end).multiplyScalar(.5),
+      new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 0, 1), direction.normalize()),
+      new THREE.Vector3(1, 1, 1),
+    ));
+  }
+
   private flush(target: THREE.Group): void {
     for (const batch of this.batches.values()) {
       const mesh = new THREE.InstancedMesh(batch.geometry, batch.material, batch.transforms.length);
@@ -156,6 +180,15 @@ export class SceneBuilder {
       }
       this.staticPart(.052, .032, 1.75, 0, y + .055, z, this.edge);
       this.staticPart(7.7, .085, .15, 0, y - .045, z - 1.39, this.steel);
+      // Flush bolt heads and raised seam rails make the tread read as fabricated steel.
+      for (const x of [-3.52, -.17, .17, 3.52]) {
+        this.staticPart(.065, .022, .065, x, y + .079, z + 1.11, this.white);
+      }
+    }
+    for (let z = near - 5; z > far + 2; z -= 8.7) {
+      this.staticPart(.075, .015, .72, -.16, y + .086, z, this.white, -.45);
+      this.staticPart(.075, .015, .72, .16, y + .086, z, this.white, .45);
+      this.staticPart(.56, .012, .04, 0, y + .087, z + .64, this.dimEnergy);
     }
     for (const side of [-1, 1]) {
       this.staticPart(.25, .46, length, side * 4.19, y - .11, mid, this.darkSteel);
@@ -167,6 +200,18 @@ export class SceneBuilder {
         this.staticPart(.1, 1.15, .13, side * 4.62, y - 1.1, z, this.darkSteel);
       }
       this.staticPart(.11, .1, length - .2, side * 4.69, y + .76, mid, this.edge);
+      this.staticPart(.13, .13, length - .6, side * 5.46, y - 1.45, mid, this.darkSteel);
+      for (let z = far + 3.6; z < near - 2; z += 8.6) {
+        // A service cabinet, louvers and a guarded white work light, always outside the rail.
+        this.staticPart(.83, 1.33, 2.16, side * 5.27, y + .64, z, this.graphite);
+        this.staticPart(.06, 1.04, 1.79, side * 5.75, y + .63, z, this.steel);
+        for (let slot = 0; slot < 5; slot++) {
+          this.staticPart(.075, .052, 1.53, side * 5.8, y + .25 + slot * .16, z, this.recess);
+        }
+        this.staticPart(.58, .08, .14, side * 5.21, y + 1.37, z, this.white);
+        this.staticPart(.5, .022, .04, side * 5.21, y + 1.32, z + .08, this.dimEnergy);
+        this.staticBeam(side * 5.24, y - .13, z - 1.3, side * 6.07, y - 1.56, z - 2.1, .16, this.steel);
+      }
     }
     // Maintenance channel on the banks. Dark insets are traversable, amber is warning only.
     if (index < layout.spec.nodes) {
@@ -189,10 +234,17 @@ export class SceneBuilder {
       this.staticPart(.09, 3.4, .11, side * 5.65, y + 4.15, z + .3, this.edge);
       this.staticPart(.26, .14, .29, side * 5.58, y + 6.14, z, this.dimEnergy);
       this.staticPart(1.2, 1.07, 1.35, side * 6.05, y + .13, z, this.darkSteel);
+      this.staticBeam(side * 6.08, y + 4.75, z, side * 3.9, y + 7.12, z, .29, this.steel);
+      this.staticBeam(side * 5.85, y + 1.45, z + .33, side * 5.85, y + 6.15, z + .33, .09, this.edge);
+      this.staticPart(.16, .13, .1, side * 6.11, y + 5.9, z + .67, this.amber);
+      this.staticPart(.54, .26, 1.02, side * 3.77, y + 7.26, z, this.graphite);
     }
     this.staticPart(12.7, .62, 1.08, 0, y + 7.54, z, this.darkSteel);
     this.staticPart(11.5, .11, .22, 0, y + 7.12, z, this.edge);
     this.staticPart(1.32, .12, .24, 0, y + 7.02, z, this.white);
+    this.staticPart(4.16, .09, .86, 0, y + 8.17, z, this.steel);
+    this.staticPart(.18, .06, 2.3, 0, y + 8.04, z - .42, this.graphite);
+    this.staticPart(1.3, .045, .12, 0, y + 7.08, z + .11, this.dimEnergy);
   }
 
   private gapFrame(bridge: BridgeLayout): void {
@@ -202,6 +254,12 @@ export class SceneBuilder {
       this.staticPart(.13, .12, 8.5, side * 4.57, (bridge.startY + bridge.endY) * .5 + .04, z, this.amber);
       this.staticPart(.44, 5.4, .75, side * 6, bridge.startY + 1.7, bridge.near + .5, this.darkSteel);
       this.staticPart(.44, 5.4, .75, side * 6, bridge.endY + 1.7, bridge.far - .5, this.darkSteel);
+      this.staticBeam(side * 4.58, bridge.startY - .42, bridge.near + .65,
+        side * 3.92, bridge.startY - 2.4, bridge.near - 2.6, .28, this.steel);
+      this.staticBeam(side * 4.58, bridge.endY - .42, bridge.far - .65,
+        side * 3.92, bridge.endY - 2.4, bridge.far + 2.6, .28, this.steel);
+      this.staticPart(.62, .39, .46, side * 4.47, bridge.startY - .62, bridge.near - 1.18, this.graphite);
+      this.staticPart(.62, .39, .46, side * 4.47, bridge.endY - .62, bridge.far + 1.18, this.graphite);
     }
     this.staticPart(8.3, .56, 1, 0, bridge.startY - 1.2, bridge.near, this.recess);
     this.staticPart(8.3, .56, 1, 0, bridge.endY - 1.2, bridge.far, this.recess);
@@ -256,6 +314,15 @@ export class SceneBuilder {
     const group = new THREE.Group();
     group.position.set(bridge.nodeX, bridge.startY, bridge.nodeZ);
     this.stage.add(group);
+    this.staticBeam(bridge.nodeX, bridge.startY + .092, bridge.nodeZ - .76,
+      0, bridge.startY + .092, bridge.near + .55, .072, this.dimEnergy);
+    const groundRing = this.mesh(this.geometry('nodeGroundRing', () => new THREE.TorusGeometry(.88, .025, 5, 36)), this.edge, group, 0, .09, 0);
+    groundRing.rotation.x = -Math.PI / 2;
+    const floorMaterial = new THREE.MeshBasicMaterial({ map: this.ambientHalo, color: 0x00bdda,
+      transparent: true, blending: THREE.AdditiveBlending, depthWrite: false, opacity: .12, side: THREE.DoubleSide });
+    this.stageResources.push(floorMaterial);
+    const floorGlow = this.mesh(this.geometry('nodeFloorGlow', () => new THREE.PlaneGeometry(3.1, 3.1)), floorMaterial, group, 0, .093, 0);
+    floorGlow.rotation.x = -Math.PI / 2;
     this.mesh(this.geometry('nodeBase', () => new THREE.CylinderGeometry(.59, .8, .25, 10)), this.steel, group, 0, .13, 0);
     this.mesh(this.geometry('nodeStem', () => new THREE.CylinderGeometry(.31, .45, .87, 8)), this.darkSteel, group, 0, .65, 0);
     this.mesh(this.geometry('nodeCap', () => new THREE.CylinderGeometry(.44, .39, .13, 10)), this.edge, group, 0, 1.11, 0);
@@ -282,7 +349,7 @@ export class SceneBuilder {
     const sign = this.makeSign(`SHIFT LINK 0${bridge.index + 1}    ◇`);
     sign.position.set(0, 3.15, -.15);
     group.add(sign);
-    return { group, ring, core, energy, halo };
+    return { group, ring, core, energy, halo, floorGlow };
   }
 
   private hazardTrack(z: number, y: number): void {
@@ -352,6 +419,39 @@ export class SceneBuilder {
     return this.mesh(this.geometry('signPlane', () => new THREE.PlaneGeometry(3.05, .6)), material, new THREE.Group());
   }
 
+  /** Tiny procedural brushed-metal variation; one shared 256px texture, no network asset. */
+  private makeMetalSurface(): THREE.Texture {
+    const canvas = document.createElement('canvas');
+    canvas.width = canvas.height = 256;
+    const ctx = canvas.getContext('2d');
+    if (ctx) {
+      const pixels = ctx.createImageData(256, 256);
+      let seed = 82731;
+      for (let i = 0; i < pixels.data.length; i += 4) {
+        seed = (1664525 * seed + 1013904223) >>> 0;
+        const grain = 227 + (seed & 19) + (Math.floor(i / 4 / 256) % 5 === 0 ? 3 : 0);
+        pixels.data[i] = grain;
+        pixels.data[i + 1] = grain;
+        pixels.data[i + 2] = Math.min(255, grain + 2);
+        pixels.data[i + 3] = 255;
+      }
+      ctx.putImageData(pixels, 0, 0);
+      ctx.lineWidth = 1;
+      for (let y = 11; y < 256; y += 18) {
+        ctx.strokeStyle = y % 3 ? '#f2f6f7' : '#b9c5cc';
+        ctx.globalAlpha = .16;
+        ctx.beginPath(); ctx.moveTo(8, y); ctx.lineTo(251, y - 2); ctx.stroke();
+      }
+      ctx.globalAlpha = 1;
+    }
+    const texture = new THREE.CanvasTexture(canvas);
+    texture.colorSpace = THREE.SRGBColorSpace;
+    texture.wrapS = texture.wrapT = THREE.RepeatWrapping;
+    texture.repeat.set(2, 3);
+    texture.anisotropy = 4;
+    return texture;
+  }
+
   private makeHaloTexture(): THREE.Texture {
     const canvas = document.createElement('canvas');
     canvas.width = canvas.height = 64;
@@ -366,6 +466,44 @@ export class SceneBuilder {
     return new THREE.CanvasTexture(canvas);
   }
 
+  private turbineBanks(): void {
+    // These ventilator arrays give the pit a mechanical silhouette instead of
+    // another wall of rectangular columns. Repeated vanes share one draw call.
+    const wheel = this.geometry('vent-wheel', () => new THREE.CylinderGeometry(1.14, 1.14, .34, 16));
+    const rim = this.geometry('vent-rim', () => new THREE.TorusGeometry(1.75, .1, 6, 24));
+    const innerRim = this.geometry('vent-inner', () => new THREE.TorusGeometry(1.18, .052, 6, 24));
+    const blade = this.box(.18, 1.16, .1);
+    const wheelBatch: Batch = { geometry: wheel, material: this.recess, transforms: [] };
+    const rimBatch: Batch = { geometry: rim, material: this.steel, transforms: [] };
+    const innerBatch: Batch = { geometry: innerRim, material: this.dimEnergy, transforms: [] };
+    const bladeBatch: Batch = { geometry: blade, material: this.edge, transforms: [] };
+    for (const batch of [wheelBatch, rimBatch, innerBatch, bladeBatch]) {
+      this.batches.set(`${batch.geometry.uuid}:${batch.material.uuid}`, batch);
+    }
+    for (const z of [-5, -33, -61, -89]) {
+      for (const side of [-1, 1]) {
+        const x = side * 9.45;
+        const y = 2.5;
+        wheelBatch.transforms.push(new THREE.Matrix4().compose(
+          new THREE.Vector3(x, y, z), new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), Math.PI / 2),
+          new THREE.Vector3(1, 1, 1),
+        ));
+        rimBatch.transforms.push(new THREE.Matrix4().makeTranslation(x, y, z + .3));
+        innerBatch.transforms.push(new THREE.Matrix4().makeTranslation(x, y, z + .38));
+        this.staticPart(4.1, .2, .38, x, y + 2.04, z, this.graphite);
+        this.staticPart(4.1, .2, .38, x, y - 2.04, z, this.graphite);
+        for (let i = 0; i < 8; i++) {
+          const angle = i * Math.PI / 4;
+          bladeBatch.transforms.push(new THREE.Matrix4().compose(
+            new THREE.Vector3(x + Math.sin(angle) * .7, y + Math.cos(angle) * .7, z + .44),
+            new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), angle + .43),
+            new THREE.Vector3(1, 1, 1),
+          ));
+        }
+      }
+    }
+  }
+
   private backdrop(): void {
     // Layered, structural silhouettes with selective practical lights.
     for (const side of [-1, 1]) {
@@ -376,10 +514,17 @@ export class SceneBuilder {
         this.staticPart(3.2, .43, 3.8, x, 10.1 + i % 3 * 2.2, z, this.darkSteel);
         this.staticPart(.15, .15, 2.25, x - side * 1.55, 7, z, i % 3 ? this.recess : this.danger);
         this.staticPart(.35, 9, .48, side * 10.5, -2.8, z, this.steel);
+        this.staticPart(.2, 11.3, .21, x - side * 1.3, 4.25, z + 1.63, this.steel);
+        this.staticPart(2.4, .14, .28, x, 7.9, z + 1.78, this.edge);
+        for (let vent = 0; vent < 5; vent++) {
+          this.staticPart(1.76, .095, .13, x, 1.7 + vent * .36, z + 1.83, this.steel);
+        }
       }
       for (let z = 2; z > -117; z -= 15) {
         this.staticPart(.44, 11.5, 1.1, side * 6.9, -2.2, z, this.darkSteel);
         this.staticPart(.22, 12, .18, side * 8.7, -2, z, this.edge);
+        this.staticPart(1.55, .31, 5.4, side * 9.65, -5.8, z - 2, this.graphite);
+        this.staticBeam(side * 8.8, -3.9, z + 1.5, side * 10.7, -7.6, z - 2.8, .22, this.steel);
       }
     }
     for (let z = -21; z > -117; z -= 18) {

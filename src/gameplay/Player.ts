@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
 
 /** A small articulated runner, built as layered armor rather than a primitive capsule. */
 export class Player {
@@ -10,8 +11,10 @@ export class Player {
   private readonly rightArm = new THREE.Group();
   private readonly leftLeg = new THREE.Group();
   private readonly rightLeg = new THREE.Group();
-  private readonly owned: Array<THREE.BufferGeometry | THREE.Material> = [];
+  private readonly owned: Array<THREE.BufferGeometry | THREE.Material | THREE.Texture> = [];
+  private readonly shapes = new Map<string, THREE.BufferGeometry>();
   private readonly accents: THREE.MeshStandardMaterial[] = [];
+  private contact!: THREE.Mesh;
   private stride = 0;
   private fallSpeed = 0;
   grounded = true;
@@ -19,6 +22,7 @@ export class Player {
 
   constructor(scene: THREE.Scene) {
     this.buildSuit();
+    this.buildContactShadow();
     this.group.add(this.model);
     this.group.position.copy(this.position);
     scene.add(this.group);
@@ -33,6 +37,7 @@ export class Player {
     this.group.position.copy(this.position);
     this.model.rotation.set(0, 0, 0);
     this.model.position.y = 0;
+    this.contact.visible = true;
   }
 
   get horizontalSpeed(): number {
@@ -79,6 +84,7 @@ export class Player {
       this.position.y += this.fallSpeed * dt;
     }
     this.animate(dt);
+    this.contact.visible = this.grounded;
     this.group.position.copy(this.position);
   }
 
@@ -102,6 +108,28 @@ export class Player {
     this.model.rotation.z += ((-this.velocity.x / this.speed) * 0.065 - this.model.rotation.z) * Math.min(1, dt * 10);
   }
 
+  private buildContactShadow(): void {
+    const canvas = document.createElement('canvas');
+    canvas.width = canvas.height = 64;
+    const ctx = canvas.getContext('2d');
+    if (ctx) {
+      const falloff = ctx.createRadialGradient(32, 32, 3, 32, 32, 31);
+      falloff.addColorStop(0, 'rgba(0,0,0,.42)');
+      falloff.addColorStop(.45, 'rgba(0,0,0,.24)');
+      falloff.addColorStop(1, 'rgba(0,0,0,0)');
+      ctx.fillStyle = falloff;
+      ctx.fillRect(0, 0, 64, 64);
+    }
+    const texture = new THREE.CanvasTexture(canvas);
+    const material = new THREE.MeshBasicMaterial({ map: texture, transparent: true, depthWrite: false, toneMapped: false });
+    const geometry = new THREE.PlaneGeometry(1.55, 1.8);
+    this.owned.push(texture, material, geometry);
+    this.contact = new THREE.Mesh(geometry, material);
+    this.contact.rotation.x = -Math.PI / 2;
+    this.contact.position.y = .025;
+    this.group.add(this.contact);
+  }
+
   private buildSuit(): void {
     const mat = (color: number, metallic = 0.65, roughness = 0.4, glow = 0): THREE.MeshStandardMaterial => {
       const material = new THREE.MeshStandardMaterial({ color, metalness: metallic, roughness,
@@ -115,9 +143,16 @@ export class Player {
     const dark = mat(0x080e14, 0.32, 0.3);
     const highlight = mat(0xf2f5f6, 0.65, 0.32);
     const energy = mat(0x00d7ff, 0.2, 0.25, 0.85);
-    const geom = (w: number, h: number, d: number): THREE.BoxGeometry => {
-      const geometry = new THREE.BoxGeometry(w, h, d);
-      this.owned.push(geometry);
+    // Soft bevels catch the key light like machined armor, not a stack of raw cubes.
+    // Shared geometries keep the articulated model inexpensive to instantiate.
+    const geom = (w: number, h: number, d: number): THREE.BufferGeometry => {
+      const key = `${w}:${h}:${d}`;
+      let geometry = this.shapes.get(key);
+      if (!geometry) {
+        geometry = new RoundedBoxGeometry(w, h, d, 2, Math.min(.038, w / 5, h / 5, d / 5));
+        this.shapes.set(key, geometry);
+        this.owned.push(geometry);
+      }
       return geometry;
     };
     const piece = (parent: THREE.Object3D, material: THREE.Material,
@@ -150,15 +185,31 @@ export class Player {
       piece(this.model, dark, 0.12, 0.31, 0.06, side * 0.115, 1.15, 0.33);
       piece(this.model, energy, 0.025, 0.22, 0.009, side * 0.115, 1.17, 0.37);
       piece(this.model, highlight, 0.12, 0.035, 0.05, side * 0.115, 1.37, 0.32);
+      piece(this.model, armor, .14, .39, .16, side * .31, 1.21, .18, side * -.22);
+      piece(this.model, dark, .11, .29, .06, side * .31, 1.2, .28, side * -.22);
     }
+    const coilGeometry = new THREE.TorusGeometry(.188, .021, 6, 24);
+    this.owned.push(coilGeometry);
+    const coil = new THREE.Mesh(coilGeometry, energy);
+    coil.position.set(0, 1.16, .376);
+    this.model.add(coil);
+    piece(this.model, dark, .24, .24, .075, 0, 1.16, .34);
+    piece(this.model, highlight, .13, .13, .029, 0, 1.16, .386);
     // Helmet: segmented shell, inset black faceplate, narrow illuminated sensor.
     const helm = new THREE.Group(); helm.position.y = 1.64; this.model.add(helm);
-    const shell = new THREE.Mesh(new THREE.SphereGeometry(0.252, 12, 10), armor);
-    this.owned.push(shell.geometry); shell.scale.set(1.13, 1, 1.12); shell.castShadow = true; helm.add(shell);
-    piece(helm, dark, 0.42, 0.18, 0.055, 0, -0.025, -0.238);
-    piece(helm, energy, 0.32, 0.026, 0.008, 0, -0.012, -0.274);
-    piece(helm, graphite, 0.37, 0.09, 0.18, 0, 0.188, 0.005);
-    piece(helm, highlight, 0.16, 0.065, 0.02, 0, 0.045, 0.267);
+    const shellGeometry = new THREE.IcosahedronGeometry(.268, 1);
+    const shell = new THREE.Mesh(shellGeometry, armor);
+    this.owned.push(shellGeometry); shell.scale.set(1.1, 1, 1.12); shell.castShadow = true; helm.add(shell);
+    piece(helm, dark, 0.44, 0.18, 0.052, 0, -0.025, -0.238);
+    piece(helm, energy, 0.34, 0.026, 0.008, 0, -0.012, -0.274);
+    piece(helm, graphite, 0.36, 0.075, 0.26, 0, 0.193, 0.005);
+    piece(helm, highlight, 0.16, 0.065, 0.018, 0, 0.045, 0.267);
+    piece(helm, dark, .32, .13, .035, 0, -.043, .292);
+    piece(helm, energy, .24, .024, .014, 0, -.009, .315);
+    for (const side of [-1, 1]) {
+      piece(helm, graphite, .105, .15, .14, side * .282, -.023, .005);
+      piece(helm, energy, .018, .078, .12, side * .342, -.024, .006);
+    }
     for (const side of [-1, 1]) {
       const arm = side < 0 ? this.leftArm : this.rightArm;
       arm.position.set(side * 0.355, 1.37, 0); this.model.add(arm);
@@ -175,6 +226,10 @@ export class Player {
       piece(leg, graphite, 0.205, 0.25, 0.22, 0, -0.55, 0.02);
       piece(leg, armor, 0.23, 0.18, 0.31, 0, -0.71, -0.06);
       piece(leg, dark, 0.25, 0.065, 0.36, 0, -0.80, -0.07);
+      piece(leg, highlight, .17, .13, .075, 0, -.41, -.185);
+      piece(leg, dark, .12, .23, .035, 0, -.56, .15);
+      piece(leg, energy, .045, .085, .016, 0, -.63, .17);
+      piece(leg, graphite, .23, .085, .21, 0, -.75, .08);
     }
   }
 }
