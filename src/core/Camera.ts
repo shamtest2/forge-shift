@@ -1,44 +1,47 @@
 import * as THREE from 'three';
-import type { Player } from '../gameplay/Player';
 
-/** Smooth fixed-heading chase rig: world-space axes remain stable for both keyboard layouts. */
-export class FollowCamera {
-  readonly camera: THREE.PerspectiveCamera;
+/** Damped world-space chase rig. It never rotates with the avatar into walls. */
+export class CameraRig {
+  readonly camera = new THREE.PerspectiveCamera(61, 1, 0.1, 180);
+  private readonly look = new THREE.Vector3(0, 1.5, -5);
   private readonly desired = new THREE.Vector3();
-  private readonly look = new THREE.Vector3();
   private readonly target = new THREE.Vector3();
-  private readonly player: Player;
-
-  constructor(player: Player) {
-    this.player = player;
-    this.camera = new THREE.PerspectiveCamera(59, 1, 0.1, 180);
-    this.reset();
-  }
+  private initialized = false;
+  private impulse = 0;
+  private elapsed = 0;
 
   resize(width: number, height: number): void {
     this.camera.aspect = width / Math.max(height, 1);
+    this.camera.fov = width < 650 ? 68 : 61;
     this.camera.updateProjectionMatrix();
   }
 
-  reset(): void {
-    const p = this.player.position;
-    this.camera.position.set(p.x, p.y + 6.0, p.z + 10.5);
-    this.look.set(p.x, p.y + 1.25, p.z - 4.0);
-    this.camera.lookAt(this.look);
+  reset(position: THREE.Vector3): void {
+    this.initialized = false;
+    this.update(1, position, 0, false);
   }
 
-  update(dt: number): void {
-    const p = this.player.position;
-    // Anticipate the route, but never jerk the view in response to a quick turn.
-    const speed = Math.min(this.player.speed / 8.4, 1);
-    this.desired.set(p.x + this.player.velocity.x * 0.08, p.y + 6.0 + speed * 0.4, p.z + 10.5 + speed * 0.5);
-    this.target.set(p.x + this.player.velocity.x * 0.12, p.y + 1.3, p.z - 4.0 - speed * 1.2);
-    const follow = 1 - Math.exp(-5.4 * dt);
+  impact(amount: number): void {
+    this.impulse = Math.max(this.impulse, Math.min(amount, 0.28));
+  }
+
+  update(dt: number, player: THREE.Vector3, speed: number, focus: boolean): void {
+    const forward = Math.min(speed / 9, 1);
+    const width = focus ? 1.2 : 0;
+    this.desired.set(player.x * 0.58 + 1.25, player.y + 6.1 + width, player.z + 9.2 + width);
+    this.target.set(player.x * 0.72, player.y + 1.4, player.z - 4.6 - forward * 2 - width);
+    const follow = this.initialized ? 1 - Math.exp(-dt * 5.2) : 1;
+    const aim = this.initialized ? 1 - Math.exp(-dt * 6.5) : 1;
     this.camera.position.lerp(this.desired, follow);
-    this.look.lerp(this.target, 1 - Math.exp(-6.2 * dt));
+    this.look.lerp(this.target, aim);
+    this.initialized = true;
+    // Brief, sub-pixel-to-small impact: never shakes the target or moves the route.
+    this.elapsed += dt;
+    this.impulse *= Math.exp(-dt * 13);
+    if (this.impulse > 0.001) {
+      this.camera.position.x += Math.sin(this.elapsed * 51) * this.impulse;
+      this.camera.position.y += Math.cos(this.elapsed * 43) * this.impulse * 0.45;
+    }
     this.camera.lookAt(this.look);
-    const fov = 59 + speed * 3;
-    this.camera.fov += (fov - this.camera.fov) * (1 - Math.exp(-3 * dt));
-    this.camera.updateProjectionMatrix();
   }
 }
