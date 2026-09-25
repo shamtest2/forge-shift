@@ -1,0 +1,54 @@
+import { test, expect } from '@playwright/test';
+
+const controls: Array<[string, number, number]> = [
+  ['w', 0, -1], ['s', 0, 1], ['a', -1, 0], ['d', 1, 0],
+  ['ArrowUp', 0, -1], ['ArrowDown', 0, 1], ['ArrowLeft', -1, 0], ['ArrowRight', 1, 0],
+];
+
+interface Snapshot {
+  frame: number;
+  player: [number, number, number];
+  camera: [number, number, number];
+  grounded: boolean;
+  calls: number;
+  webgl: boolean;
+}
+
+test('real WebGL scene, eight physical keyboard inputs and following camera', async ({ page }) => {
+  const errors: string[] = [];
+  page.on('pageerror', error => errors.push(error.message));
+  page.on('console', message => { if (message.type() === 'error') errors.push(message.text()); });
+  page.on('requestfailed', request => { if (request.url().startsWith('http://127.0.0.1:4173')) errors.push(request.url()); });
+
+  await page.goto('/');
+  await page.waitForFunction(() => window.__forgeDebug?.().frame && window.__forgeDebug().frame > 2);
+  await page.waitForTimeout(3200); // Observe initialized WebGL, not just the HTML shell.
+  const canvas = page.locator('canvas');
+  await expect(canvas).toBeVisible();
+  const initial = await page.evaluate(() => window.__forgeDebug!() as Snapshot);
+  expect(initial.webgl).toBe(true);
+  expect(initial.calls).toBeGreaterThan(0);
+  expect(initial.grounded).toBe(true);
+  expect(errors).toEqual([]);
+  await page.screenshot({ path: 'test-results/m0-initial.png' });
+
+  for (const [key, dx, dz] of controls) {
+    const before = await page.evaluate(() => window.__forgeDebug!() as Snapshot);
+    await page.keyboard.down(key);
+    await page.waitForTimeout(280);
+    await page.keyboard.up(key);
+    await page.waitForTimeout(200);
+    const after = await page.evaluate(() => window.__forgeDebug!() as Snapshot);
+    const deltaX = after.player[0] - before.player[0];
+    const deltaZ = after.player[2] - before.player[2];
+    if (dx !== 0) expect(deltaX * dx, `${key}: horizontal player movement`).toBeGreaterThan(0.65);
+    if (dz !== 0) expect(deltaZ * dz, `${key}: forward/back player movement`).toBeGreaterThan(0.65);
+    if (dx !== 0) expect((after.camera[0] - before.camera[0]) * dx, `${key}: camera follows horizontally`).toBeGreaterThan(0.14);
+    if (dz !== 0) expect((after.camera[2] - before.camera[2]) * dz, `${key}: camera follows depth`).toBeGreaterThan(0.25);
+    expect(after.grounded, `${key}: normal movement does not leave platform`).toBe(true);
+    expect(after.webgl).toBe(true);
+    console.log(key, JSON.stringify({ deltaX: +deltaX.toFixed(2), deltaZ: +deltaZ.toFixed(2), camera: after.camera.map(n => +n.toFixed(2)) }));
+    if (key === 'w' || key === 'ArrowLeft') await page.screenshot({ path: `test-results/m0-${key}.png` });
+  }
+  expect(errors).toEqual([]);
+});
