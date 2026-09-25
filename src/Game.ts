@@ -29,6 +29,7 @@ export class Game {
   private readonly input: Input;
   private readonly renderer: THREE.WebGLRenderer;
   private readonly floor = (x: number, z: number): number | null => this.level.groundHeight(x, z);
+  private readonly constrainX = (x: number, z: number): number => this.level.constrainX(x, z);
   private stage = 0;
   private attempts = 0;
   private result: RunResult | null = null;
@@ -192,7 +193,7 @@ export class Game {
       while (remaining > 0 && this.state.phase === 'gameplay') {
         const step = Math.min(remaining, 1 / 60);
         this.player.speed = STAGES[this.stage]!.speed * (this.level.onRushLane(this.player.position.x, this.player.position.z) ? 1.23 : 1);
-        this.player.update(step, this.input.x, this.input.z, this.floor);
+        this.player.update(step, this.input.x, this.input.z, this.floor, this.constrainX);
         this.shifts.update(step, this.player.position);
         const events = this.level.update(step, this.run.elapsed + step, this.player.position);
         for (let i = 0; i < events.pickup; i++) {

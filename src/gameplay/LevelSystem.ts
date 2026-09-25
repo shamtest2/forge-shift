@@ -95,6 +95,19 @@ export class LevelSystem {
     this.visuals.bridges[index]?.setProgress(progress);
   }
 
+  /** The visible edge rails have collision; momentum must not slip through them. */
+  constrainX(x: number, z: number): number {
+    for (const pad of this.layout.platforms) {
+      if (z <= pad.near && z >= pad.far) return THREE.MathUtils.clamp(x, -3.78, 3.78);
+    }
+    for (const bridge of this.layout.bridges) {
+      if (z > bridge.near || z < bridge.far || (this.bridgeProgress[bridge.index] ?? 0) < .9) continue;
+      if (this.layout.spec.rushLane && x >= 2.4) return THREE.MathUtils.clamp(x, 2.62, 3.45);
+      if (x > -2.4 && x < 2.4) return THREE.MathUtils.clamp(x, -1.74, 1.74);
+    }
+    return x; // Missing bridge / void: no imaginary floor or invisible wall.
+  }
+
   groundHeight(x: number, z: number): number | null {
     // The edge and the gap are real voids. A bridge is solid only once its two
     // mechanical halves have joined; colored floor pixels are never colliders.
@@ -126,7 +139,9 @@ export class LevelSystem {
     const visuals = this.visuals;
     for (let i = 0; i < this.layout.hazards.length; i++) {
       const field = this.layout.hazards[i]!;
-      const x = Math.sin(elapsed * field.frequency + field.phase) * 2.65;
+      // Leave an authored maintenance shoulder on either side. The gate still
+      // sweeps the center but never closes every possible path at once.
+      const x = Math.sin(elapsed * field.frequency + field.phase) * 2.22;
       const visual = visuals.hazards[i];
       if (visual) visual.position.x = x;
       if (Math.abs(player.z - field.z) < 0.78 && Math.abs(player.x - x) < 0.72 && Math.abs(player.y - field.y) < 1.5) {

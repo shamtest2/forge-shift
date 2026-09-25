@@ -142,7 +142,7 @@ export class UI {
     const detail = won ? (result.newBestTime ? 'NEW PERSONAL BEST // EXTRACTION CONFIRMED' : 'EXTRACTION CONFIRMED // GO FASTER')
       : result.outcome === 'hazard' ? 'Read the amber sweep. Move around it.'
       : result.outcome === 'timeout' ? 'The system closed. Chain your shifts faster.'
-      : 'Missing floor. Shift a bridge before crossing.';
+      : 'You left the walkway. Stay on the deck and Shift before a gap.';
     const next = won && result.stage < STAGES.length - 1;
     const best = progress.best[result.stage];
     this.overlay.innerHTML = `<div class="overlay-shade"></div><section class="panel result-panel" role="dialog" aria-modal="true" aria-label="${status}">

@@ -48,16 +48,25 @@ export class Player {
   }
 
   /** Ground comes from the actual walkable level; gaps and edges have no floor. */
-  update(dt: number, inputX: number, inputZ: number, ground: (x: number, z: number) => number | null): void {
+  update(dt: number, inputX: number, inputZ: number,
+    ground: (x: number, z: number) => number | null,
+    constrainX: (x: number, z: number) => number): void {
     const magnitude = Math.hypot(inputX, inputZ) || 1;
     const targetX = inputX / magnitude * this.speed;
     const targetZ = inputZ / magnitude * this.speed;
-    const acceleration = inputX || inputZ ? 12 : 9;
+    // Stop promptly at narrow shoulders and gaps; momentum should not carry
+    // a released strafe off a ledge on a low-frame-rate device.
+    const acceleration = inputX || inputZ ? 14 : 18;
     const t = 1 - Math.exp(-acceleration * dt);
     this.velocity.x += (targetX - this.velocity.x) * t;
     this.velocity.z += (targetZ - this.velocity.z) * t;
     this.position.x += this.velocity.x * dt;
     this.position.z += this.velocity.z * dt;
+    const boundedX = constrainX(this.position.x, this.position.z);
+    if (boundedX !== this.position.x) {
+      this.position.x = boundedX;
+      this.velocity.x = 0;
+    }
 
     const floor = ground(this.position.x, this.position.z);
     if (floor !== null && (this.grounded || (this.fallSpeed <= 0 && this.position.y >= floor - 0.25))) {
